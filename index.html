@@ -1,0 +1,379 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1.0" />
+<meta name="theme-color" content="#05070d" />
+<meta name="description" content="UIFabric — AI-Native Component Development & Runtime Intelligence Platform" />
+<title>UIFabric — AI-Native Component Development & Runtime Intelligence</title>
+<style>
+:root{
+  --bg:#05070d;--bg2:#080b14;--panel:rgba(13,18,31,.72);--panel2:rgba(18,25,42,.86);
+  --line:rgba(148,163,184,.14);--text:#eef4ff;--muted:#93a1b8;--soft:#c9d4e6;
+  --cyan:#5ee7ff;--blue:#6b8cff;--violet:#a78bfa;--green:#4ade80;--amber:#fbbf24;--red:#fb7185;
+  --shadow:0 25px 80px rgba(0,0,0,.42);--radius:24px;--max:1240px;
+}
+*{box-sizing:border-box}html{scroll-behavior:smooth}body{margin:0;background:
+radial-gradient(circle at 15% 5%,rgba(80,110,255,.12),transparent 28rem),
+radial-gradient(circle at 88% 12%,rgba(40,220,255,.09),transparent 25rem),
+linear-gradient(180deg,#05070d,#070a12 45%,#05070d);color:var(--text);
+font-family:Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;overflow-x:hidden}
+body:before{content:"";position:fixed;inset:0;pointer-events:none;opacity:.18;background-image:linear-gradient(rgba(255,255,255,.025) 1px,transparent 1px),linear-gradient(90deg,rgba(255,255,255,.025) 1px,transparent 1px);background-size:64px 64px;mask-image:linear-gradient(to bottom,black,transparent 75%);z-index:-2}
+a{color:inherit;text-decoration:none}.container{width:min(var(--max),calc(100% - 40px));margin:auto}.section{padding:110px 0;position:relative}.eyebrow{display:inline-flex;gap:8px;align-items:center;font-size:11px;letter-spacing:.16em;text-transform:uppercase;color:#8ddfff;font-weight:800}.dot{width:7px;height:7px;border-radius:50%;background:var(--cyan);box-shadow:0 0 18px var(--cyan);display:inline-block}.h2{font-size:clamp(34px,5vw,68px);line-height:.98;letter-spacing:-.045em;margin:18px 0}.lead{color:var(--muted);font-size:18px;line-height:1.7;max-width:720px}.small{font-size:13px;color:var(--muted);line-height:1.6}
+.glow{position:absolute;border-radius:50%;filter:blur(80px);pointer-events:none}.g1{width:400px;height:400px;background:rgba(87,108,255,.12);left:-160px;top:10%}.g2{width:340px;height:340px;background:rgba(53,224,255,.08);right:-130px;bottom:8%}
+nav{position:fixed;top:14px;left:50%;transform:translateX(-50%);width:min(1160px,calc(100% - 24px));height:64px;border:1px solid rgba(255,255,255,.08);background:rgba(5,8,15,.64);backdrop-filter:blur(18px);z-index:1000;border-radius:18px;display:flex;align-items:center;padding:0 14px;box-shadow:0 12px 50px rgba(0,0,0,.25)}
+.brand{display:flex;align-items:center;gap:10px;font-weight:900;letter-spacing:-.03em}.brandmark{width:31px;height:31px;border-radius:10px;position:relative;background:linear-gradient(135deg,var(--cyan),var(--violet));box-shadow:0 0 30px rgba(94,231,255,.24)}.brandmark:after{content:"";position:absolute;inset:7px;border:2px solid #07101b;border-radius:7px;transform:rotate(45deg)}
+.navlinks{display:flex;gap:18px;margin-left:auto;margin-right:14px}.navlinks a{font-size:12px;color:#aab6c9;transition:.2s}.navlinks a:hover{color:white}.navbtn{border:1px solid rgba(255,255,255,.1);background:#fff;color:#070a10;border-radius:12px;padding:10px 14px;font-weight:800;font-size:12px;cursor:pointer}
+.hero{min-height:920px;padding-top:170px;display:grid;grid-template-columns:1fr 1.05fr;gap:40px;align-items:center;position:relative}.hero h1{font-size:clamp(54px,7.2vw,104px);line-height:.88;letter-spacing:-.065em;margin:18px 0 24px;max-width:760px}.hero h1 span{background:linear-gradient(100deg,#fff 25%,#8eeaff 58%,#a78bfa);-webkit-background-clip:text;background-clip:text;color:transparent}.hero-actions{display:flex;gap:12px;margin:30px 0 25px;flex-wrap:wrap}.btn{padding:14px 18px;border-radius:13px;border:1px solid rgba(255,255,255,.1);background:rgba(255,255,255,.05);color:white;font-weight:800;cursor:pointer;transition:.25s}.btn.primary{background:linear-gradient(135deg,#f7fbff,#bdeeff);color:#06101b;border:none}.btn:hover{transform:translateY(-2px);box-shadow:0 15px 35px rgba(0,0,0,.25)}.pills{display:flex;gap:8px;flex-wrap:wrap}.pill{font-size:11px;color:#aebbd0;border:1px solid var(--line);padding:7px 10px;border-radius:999px;background:rgba(255,255,255,.025)}
+.hero-visual{height:640px;position:relative;perspective:1200px}.orb{position:absolute;width:430px;height:430px;border-radius:50%;left:50%;top:50%;transform:translate(-50%,-50%);background:radial-gradient(circle at 35% 28%,rgba(110,231,255,.16),transparent 32%),radial-gradient(circle at 65% 70%,rgba(167,139,250,.13),transparent 38%),rgba(9,14,25,.64);border:1px solid rgba(160,190,255,.16);box-shadow:inset 0 0 80px rgba(100,150,255,.08),0 0 120px rgba(73,116,255,.08);animation:float 7s ease-in-out infinite}.orb:before,.orb:after{content:"";position:absolute;inset:30px;border:1px solid rgba(102,230,255,.15);border-radius:50%;transform:rotateX(65deg) rotateZ(20deg)}.orb:after{inset:58px;transform:rotateY(65deg) rotateZ(-25deg);border-color:rgba(167,139,250,.14)}@keyframes float{50%{transform:translate(-50%,-53%) rotateX(4deg) rotateY(-4deg)}}
+.node{position:absolute;z-index:4;min-width:128px;padding:12px 14px;border:1px solid rgba(157,190,255,.18);background:rgba(9,14,25,.78);backdrop-filter:blur(14px);border-radius:15px;box-shadow:0 15px 50px rgba(0,0,0,.3);animation:nodeFloat 5s ease-in-out infinite}.node strong{display:block;font-size:12px}.node small{color:#8090a9;font-size:10px}.n1{left:3%;top:24%}.n2{right:3%;top:19%;animation-delay:-1s}.n3{left:7%;bottom:18%;animation-delay:-2s}.n4{right:6%;bottom:14%;animation-delay:-3s}.n5{left:50%;top:50%;transform:translate(-50%,-50%);min-width:180px;text-align:center;border-color:rgba(94,231,255,.3);box-shadow:0 0 60px rgba(94,231,255,.08)}@keyframes nodeFloat{50%{translate:0 -9px}}
+svg.lines{position:absolute;inset:0;width:100%;height:100%;z-index:2;overflow:visible}.trace{stroke-dasharray:5 13;animation:dash 1.4s linear infinite}@keyframes dash{to{stroke-dashoffset:-72}}
+.statbar{display:grid;grid-template-columns:repeat(4,1fr);gap:1px;background:var(--line);border:1px solid var(--line);border-radius:20px;overflow:hidden;margin-top:38px}.stat{padding:22px;background:rgba(255,255,255,.025)}.stat b{font-size:30px;letter-spacing:-.04em}.stat span{display:block;color:#7f8da3;font-size:11px;margin-top:5px}
+.section-head{display:flex;justify-content:space-between;gap:30px;align-items:end;margin-bottom:45px}.section-head .lead{max-width:560px}
+.cards4{display:grid;grid-template-columns:repeat(4,1fr);gap:14px}.glass{border:1px solid var(--line);background:linear-gradient(145deg,rgba(255,255,255,.055),rgba(255,255,255,.018));border-radius:var(--radius);box-shadow:var(--shadow);backdrop-filter:blur(16px)}.layer{padding:28px;min-height:290px;position:relative;overflow:hidden}.layer:after{content:"";position:absolute;width:180px;height:180px;border-radius:50%;right:-90px;bottom:-90px;background:rgba(94,231,255,.08);filter:blur(25px)}.num{font-size:11px;color:#708098;font-weight:900}.layer h3{font-size:23px;margin:40px 0 12px;letter-spacing:-.03em}.layer p{font-size:13px;line-height:1.65;color:var(--muted)}.layer-icon{width:42px;height:42px;border:1px solid var(--line);border-radius:13px;display:grid;place-items:center;color:var(--cyan);background:rgba(94,231,255,.05)}
+.demo-shell{padding:14px;border-radius:30px;background:linear-gradient(145deg,rgba(30,42,70,.6),rgba(8,11,20,.92));border:1px solid rgba(150,180,255,.13);box-shadow:0 35px 100px rgba(0,0,0,.5)}.demo{display:grid;grid-template-columns:210px 1fr;min-height:720px;border:1px solid var(--line);border-radius:20px;overflow:hidden;background:#070b13}.sidebar{background:rgba(255,255,255,.025);border-right:1px solid var(--line);padding:18px}.side-brand{font-weight:900;font-size:14px;margin-bottom:24px}.side-section{color:#56647a;font-size:9px;text-transform:uppercase;letter-spacing:.14em;margin:20px 8px 8px}.side-item{padding:9px 10px;border-radius:9px;color:#8290a7;font-size:11px;margin:2px 0;cursor:pointer}.side-item.active,.side-item:hover{background:rgba(94,231,255,.07);color:#dffaff}.main{min-width:0}.topbar{height:60px;border-bottom:1px solid var(--line);display:flex;align-items:center;justify-content:space-between;padding:0 18px}.status{font-size:10px;color:#86efac}.workspace{padding:20px}.workspace-head{display:flex;justify-content:space-between;align-items:center;gap:10px;margin-bottom:18px}.workspace-head h3{margin:0;font-size:20px}.select{background:#0b111d;border:1px solid var(--line);color:#c7d3e6;padding:9px 11px;border-radius:9px;font-size:10px}
+.scenario{display:grid;grid-template-columns:1.15fr .85fr;gap:14px}.console{min-height:460px;padding:18px}.console-title{display:flex;justify-content:space-between;color:#aab7ca;font-size:11px;margin-bottom:14px}.terminal{background:#05080e;border:1px solid rgba(255,255,255,.07);border-radius:14px;padding:16px;min-height:280px;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11px;color:#9eabc0;overflow:hidden}.log{margin:0 0 10px;opacity:.88}.log .ok{color:#6ee7b7}.log .info{color:#6bdcff}.log .warn{color:#f8d06b}.log .bad{color:#fb7185}.cursor{display:inline-block;width:7px;height:13px;background:#75e6ff;vertical-align:-2px;animation:blink 1s infinite}@keyframes blink{50%{opacity:0}}
+.runrow{display:flex;gap:8px;flex-wrap:wrap;margin-top:13px}.runbtn{font-size:10px;padding:9px 11px;border-radius:9px;border:1px solid var(--line);background:#0c1220;color:#d7e2f3;cursor:pointer}.runbtn.mainrun{background:linear-gradient(135deg,#7eeeff,#a78bfa);color:#07101a;border:0;font-weight:900}
+.sidepanel{padding:18px}.metric{padding:15px;border:1px solid var(--line);border-radius:14px;background:rgba(255,255,255,.02);margin-bottom:10px}.metric-head{display:flex;justify-content:space-between;font-size:10px;color:#8e9bb0}.metric b{display:block;font-size:26px;margin-top:7px;letter-spacing:-.04em}.bar{height:5px;background:#101827;border-radius:99px;overflow:hidden;margin-top:10px}.bar i{display:block;height:100%;width:78%;background:linear-gradient(90deg,var(--cyan),var(--violet));border-radius:99px}.flow{margin-top:12px;padding:15px;border:1px solid var(--line);border-radius:14px}.flow-title{font-size:10px;color:#8c9ab0;margin-bottom:12px}.step{display:flex;align-items:center;gap:9px;font-size:10px;color:#728198;margin:8px 0}.step i{width:7px;height:7px;border-radius:50%;background:#28364e}.step.active i{background:var(--cyan);box-shadow:0 0 12px var(--cyan)}.step.done i{background:var(--green)}.step.active{color:#dceaff}
+.agents{display:grid;grid-template-columns:repeat(4,1fr);gap:14px}.agent-card{padding:22px;min-height:250px;position:relative;overflow:hidden}.agent-card .ring{width:100px;height:100px;border:1px dashed rgba(120,170,255,.2);border-radius:50%;margin:0 auto 20px;display:grid;place-items:center;position:relative}.ring:after{content:"";width:44px;height:44px;border-radius:50%;background:radial-gradient(circle,#9cefff,rgba(94,231,255,.06));box-shadow:0 0 45px rgba(94,231,255,.2)}.agent-card:nth-child(2) .ring:after{background:radial-gradient(circle,#a78bfa,rgba(167,139,250,.06))}.agent-card:nth-child(3) .ring:after{background:radial-gradient(circle,#fbbf24,rgba(251,191,36,.06))}.agent-card:nth-child(4) .ring:after{background:radial-gradient(circle,#4ade80,rgba(74,222,128,.06))}.agent-card h3{text-align:center;margin:0 0 7px}.agent-card p{text-align:center;color:var(--muted);font-size:12px;line-height:1.5}.tagrow{display:flex;justify-content:center;gap:6px;flex-wrap:wrap}.tag{font-size:9px;color:#8d9ab0;border:1px solid var(--line);padding:5px 7px;border-radius:99px}
+.arch{position:relative;min-height:620px;padding:30px;overflow:hidden}.arch-grid{display:grid;grid-template-columns:1fr;gap:10px;max-width:880px;margin:auto}.arch-layer{display:flex;align-items:center;justify-content:center;gap:10px;min-height:74px;border:1px solid var(--line);border-radius:17px;background:rgba(255,255,255,.025);position:relative}.arch-layer span{font-size:10px;color:#91a0b8;border:1px solid var(--line);padding:8px 11px;border-radius:9px;background:#0b101b}.arch-layer strong{position:absolute;left:14px;font-size:10px;color:#65748a;text-transform:uppercase;letter-spacing:.1em}.connector{height:18px;border-left:1px dashed rgba(94,231,255,.3);margin:auto}
+.lab-grid{display:grid;grid-template-columns:1fr 1fr;gap:14px}.lab{padding:25px}.lab h3{margin:0 0 10px}.failure{display:flex;gap:8px;flex-wrap:wrap;margin:18px 0}.failure button{padding:9px 10px;border:1px solid var(--line);background:#0b111d;color:#b7c5d9;border-radius:9px;font-size:10px;cursor:pointer}.recovery{height:170px;border:1px solid var(--line);border-radius:14px;background:#05080f;padding:15px;display:flex;flex-direction:column;justify-content:center}.state{text-align:center;font-size:28px;font-weight:900;letter-spacing:-.04em}.substate{text-align:center;color:#75839a;font-size:11px;margin-top:6px}.state.green{color:#6ee7b7}.state.red{color:#fb7185}.state.amber{color:#fcd34d}
+.security{display:grid;grid-template-columns:1fr 1fr;gap:14px}.tenant{padding:26px;min-height:370px}.tenant h3{margin:0}.tenant-box{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-top:24px}.tenant-col{padding:16px;border:1px solid var(--line);border-radius:15px;background:#080d17}.tenant-col b{font-size:12px}.record{margin-top:8px;font-size:10px;color:#8290a7;padding:7px;border-radius:8px;background:rgba(255,255,255,.025)}.attack{margin-top:20px;padding:12px;border:1px dashed rgba(251,113,133,.3);border-radius:12px;color:#fb9aa9;font-size:10px;text-align:center;cursor:pointer}.blocked{display:none;margin-top:12px;padding:12px;border-radius:12px;background:rgba(74,222,128,.05);border:1px solid rgba(74,222,128,.2);color:#86efac;font-size:10px;text-align:center}.blocked.show{display:block}
+.observability{display:grid;grid-template-columns:1.2fr .8fr;gap:14px}.chart{padding:24px;min-height:390px}.chart svg{width:100%;height:270px}.trace-card{padding:24px}.trace-row{display:flex;justify-content:space-between;padding:11px 0;border-bottom:1px solid var(--line);font-size:10px;color:#8b99ad}.trace-row b{color:#dce7f7}.trace-row span{color:#67e8f9}
+.timeline{display:flex;align-items:center;gap:0;margin:25px 0}.tl{flex:1;text-align:center;position:relative}.tl:not(:last-child):after{content:"";position:absolute;top:11px;left:50%;width:100%;height:1px;background:linear-gradient(90deg,rgba(94,231,255,.4),rgba(167,139,250,.25))}.tl-dot{width:22px;height:22px;border-radius:50%;border:1px solid rgba(94,231,255,.35);background:#09111e;display:inline-grid;place-items:center;position:relative;z-index:2;font-size:8px;color:#8ceaff}.tl label{display:block;font-size:9px;color:#75839a;margin-top:9px}
+.tech{display:flex;flex-wrap:wrap;gap:9px}.tech span{padding:11px 13px;border-radius:11px;border:1px solid var(--line);background:rgba(255,255,255,.025);font-size:11px;color:#b9c6d9}.decision-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:14px}.decision{padding:24px}.decision h3{margin:0 0 10px}.decision p{font-size:12px;line-height:1.7;color:var(--muted)}
+.recruiter{padding:35px;display:grid;grid-template-columns:1fr 1fr;gap:30px;align-items:center}.checklist{display:grid;grid-template-columns:1fr 1fr;gap:9px;margin-top:20px}.check{padding:11px;border:1px solid var(--line);border-radius:10px;color:#b8c5d8;font-size:11px;background:rgba(255,255,255,.02)}.check:before{content:"✓";color:#6ee7b7;margin-right:8px}.resume-box{padding:25px;border:1px solid rgba(94,231,255,.16);background:radial-gradient(circle at 50% 0,rgba(94,231,255,.08),transparent 55%),rgba(255,255,255,.025);border-radius:18px}.resume-box h3{margin:0 0 8px}.resume-box p{font-size:12px;line-height:1.7;color:#9aa8bd}
+footer{padding:70px 0 40px;border-top:1px solid var(--line);color:#7f8da2}.footer-inner{display:flex;justify-content:space-between;gap:20px;align-items:center}.footer-brand{color:white;font-weight:900}.footer-links{display:flex;gap:15px;font-size:11px}
+.modal{position:fixed;inset:0;background:rgba(1,3,7,.82);backdrop-filter:blur(16px);display:none;align-items:center;justify-content:center;z-index:2000;padding:20px}.modal.show{display:flex}.modal-card{width:min(1100px,100%);max-height:90vh;overflow:auto;background:#070b13;border:1px solid rgba(160,190,255,.18);border-radius:25px;box-shadow:0 50px 150px rgba(0,0,0,.7);padding:22px}.modal-top{display:flex;justify-content:space-between;align-items:center;margin-bottom:14px}.close{width:34px;height:34px;border-radius:9px;border:1px solid var(--line);background:#0b111d;color:#b8c6da;cursor:pointer}.architecture3d{height:610px;position:relative;overflow:hidden;border:1px solid var(--line);border-radius:18px;background:radial-gradient(circle at 50% 45%,rgba(94,231,255,.06),transparent 30%),#05080e;cursor:grab}.architecture3d:active{cursor:grabbing}.cube{position:absolute;left:50%;top:50%;width:220px;height:220px;transform-style:preserve-3d;transform:translate(-50%,-50%) rotateX(-12deg) rotateY(-25deg);transition:transform .15s}.face{position:absolute;inset:0;border:1px solid rgba(94,231,255,.18);background:rgba(10,20,34,.35);backdrop-filter:blur(4px);display:grid;place-items:center;color:#7eeeff;font-size:12px;font-weight:800}.f1{transform:translateZ(110px)}.f2{transform:rotateY(180deg) translateZ(110px)}.f3{transform:rotateY(90deg) translateZ(110px)}.f4{transform:rotateY(-90deg) translateZ(110px)}.f5{transform:rotateX(90deg) translateZ(110px)}.f6{transform:rotateX(-90deg) translateZ(110px)}.orbit{position:absolute;left:50%;top:50%;border:1px dashed rgba(167,139,250,.22);border-radius:50%;transform:translate(-50%,-50%) rotateX(66deg);animation:spin 12s linear infinite}.o1{width:480px;height:180px}.o2{width:620px;height:240px;transform:translate(-50%,-50%) rotateY(65deg);animation-duration:18s}@keyframes spin{to{rotate:0 0 1 360deg}}.orbit-dot{position:absolute;width:11px;height:11px;border-radius:50%;background:#7eeeff;box-shadow:0 0 20px #7eeeff;top:-5px;left:50%}.modal-caption{display:flex;justify-content:space-between;gap:15px;margin-top:12px;font-size:11px;color:#77869d}
+.toast{position:fixed;right:20px;bottom:20px;padding:12px 15px;border-radius:12px;background:#0b1220;border:1px solid rgba(94,231,255,.18);color:#bfefff;font-size:11px;opacity:0;transform:translateY(10px);pointer-events:none;transition:.25s;z-index:3000}.toast.show{opacity:1;transform:none}
+.reveal{opacity:0;transform:translateY(25px);transition:opacity .8s ease,transform .8s ease}.reveal.visible{opacity:1;transform:none}
+@media(max-width:1000px){.hero{grid-template-columns:1fr;padding-top:130px}.hero-visual{height:520px}.cards4,.agents{grid-template-columns:1fr 1fr}.scenario,.observability,.security,.lab-grid,.recruiter{grid-template-columns:1fr}.demo{grid-template-columns:1fr}.sidebar{display:none}.navlinks{display:none}.statbar{grid-template-columns:1fr 1fr}.decision-grid{grid-template-columns:1fr}.hero h1{font-size:clamp(52px,12vw,84px)}}
+@media(max-width:620px){.container{width:min(100% - 24px,1240px)}.section{padding:75px 0}.hero{min-height:800px}.hero-visual{height:430px}.orb{width:290px;height:290px}.node{min-width:100px;padding:9px}.n1{left:0}.n2{right:0}.n3{left:0}.n4{right:0}.n5{min-width:145px}.cards4,.agents,.statbar{grid-template-columns:1fr}.section-head{display:block}.stat b{font-size:26px}.workspace{padding:12px}.scenario{display:block}.console{min-height:430px}.sidepanel{padding:12px}.tenant-box{grid-template-columns:1fr}.checklist{grid-template-columns:1fr}.footer-inner{display:block}.footer-links{margin-top:14px}.architecture3d{height:480px}.cube{width:160px;height:160px}.f1{transform:translateZ(80px)}.f2{transform:rotateY(180deg) translateZ(80px)}.f3{transform:rotateY(90deg) translateZ(80px)}.f4{transform:rotateY(-90deg) translateZ(80px)}.f5{transform:rotateX(90deg) translateZ(80px)}.f6{transform:rotateX(-90deg) translateZ(80px)}.o1{width:320px}.o2{width:420px}}
+</style>
+</head>
+<body>
+<nav>
+  <a class="brand" href="#top"><span class="brandmark"></span>UIFabric</a>
+  <div class="navlinks">
+    <a href="#platform">Platform</a><a href="#demo">Live Demo</a><a href="#agents">Agents</a><a href="#architecture">Architecture</a><a href="#observability">Runtime</a><a href="#security">Security</a>
+  </div>
+  <button class="navbtn" onclick="openArchitecture()">Explore 3D</button>
+</nav>
+
+<main id="top">
+<section class="hero container">
+  <div class="reveal">
+    <div class="eyebrow"><i class="dot"></i> AI-NATIVE APPLICATION INFRASTRUCTURE</div>
+    <h1>Build interfaces that <span>AI can understand.</span></h1>
+    <p class="lead">UIFabric is an AI-native component development and runtime intelligence platform that connects reusable UI, autonomous agents, event-driven workflows, security controls and production observability.</p>
+    <div class="hero-actions">
+      <a class="btn primary" href="#demo">▶ Run the live demo</a>
+      <a class="btn" href="#architecture">Explore architecture</a>
+    </div>
+    <div class="pills"><span class="pill">Multi-Tenant</span><span class="pill">Agent Runtime</span><span class="pill">Event-Driven</span><span class="pill">Observable</span><span class="pill">Human-Controlled</span></div>
+  </div>
+  <div class="hero-visual reveal">
+    <svg class="lines" viewBox="0 0 600 640" preserveAspectRatio="none">
+      <defs><linearGradient id="lg"><stop stop-color="#5ee7ff" stop-opacity=".05"/><stop offset=".5" stop-color="#5ee7ff" stop-opacity=".8"/><stop offset="1" stop-color="#a78bfa" stop-opacity=".1"/></linearGradient></defs>
+      <path class="trace" d="M90 180 C180 190 200 310 300 320" fill="none" stroke="url(#lg)" stroke-width="1.2"/>
+      <path class="trace" d="M510 150 C420 180 420 270 300 320" fill="none" stroke="url(#lg)" stroke-width="1.2"/>
+      <path class="trace" d="M105 500 C180 470 210 370 300 320" fill="none" stroke="url(#lg)" stroke-width="1.2"/>
+      <path class="trace" d="M500 510 C420 470 400 390 300 320" fill="none" stroke="url(#lg)" stroke-width="1.2"/>
+    </svg>
+    <div class="orb"></div>
+    <div class="node n1"><strong>Sales Agent</strong><small>pipeline intelligence</small></div>
+    <div class="node n2"><strong>Support Agent</strong><small>customer resolution</small></div>
+    <div class="node n3"><strong>Compliance</strong><small>policy enforcement</small></div>
+    <div class="node n4"><strong>Analytics</strong><small>runtime insights</small></div>
+    <div class="node n5"><strong>UIFabric Runtime</strong><small>components • events • actions</small></div>
+  </div>
+</section>
+
+<div class="container statbar reveal">
+  <div class="stat"><b>4</b><span>Specialist AI agents</span></div>
+  <div class="stat"><b>100%</b><span>Cross-tenant blocking target verified in CI</span></div>
+  <div class="stat"><b>5 min</b><span>Documented RPO target</span></div>
+  <div class="stat"><b>30 min</b><span>Documented RTO target</span></div>
+</div>
+
+<section id="platform" class="section container">
+  <div class="glow g1"></div>
+  <div class="section-head reveal"><div><div class="eyebrow">01 / THE PLATFORM</div><h2 class="h2">One system.<br>Four intelligent layers.</h2></div><p class="lead">The product story starts with the experience, then reveals the infrastructure underneath it.</p></div>
+  <div class="cards4">
+    <article class="glass layer reveal"><div class="num">01</div><div class="layer-icon">◈</div><h3>Build</h3><p>Reusable React, Lit and Web Component primitives become consistent application capabilities instead of isolated UI widgets.</p></article>
+    <article class="glass layer reveal"><div class="num">02</div><div class="layer-icon">✦</div><h3>Reason</h3><p>Specialist agents interpret application context, select tools and plan workflows through a shared action layer.</p></article>
+    <article class="glass layer reveal"><div class="num">03</div><div class="layer-icon">↯</div><h3>React</h3><p>Commands become durable events. Outbox delivery, Kafka, idempotency and event processing connect business operations.</p></article>
+    <article class="glass layer reveal"><div class="num">04</div><div class="layer-icon">◎</div><h3>Observe</h3><p>OpenTelemetry, metrics, logs and traces make agent decisions and application runtime behavior inspectable.</p></article>
+  </div>
+</section>
+
+<section id="demo" class="section container">
+  <div class="section-head reveal"><div><div class="eyebrow">02 / LIVE PRODUCT SIMULATION</div><h2 class="h2">Watch the system think,<br>act and recover.</h2></div><p class="lead">This embedded control plane is intentionally self-contained. Click a scenario and watch a complete workflow propagate through agents, policy, events and telemetry.</p></div>
+  <div class="demo-shell reveal">
+    <div class="demo">
+      <aside class="sidebar">
+        <div class="side-brand">UIFabric Control</div>
+        <div class="side-item active">Overview</div><div class="side-item">AI Agents</div><div class="side-item">Components</div><div class="side-item">Events</div><div class="side-item">Approvals</div><div class="side-item">Observability</div>
+        <div class="side-section">Security</div><div class="side-item">Tenants</div><div class="side-item">Policies</div><div class="side-item">Audit</div>
+      </aside>
+      <div class="main">
+        <div class="topbar"><span style="font-size:11px;color:#b8c5d8">Runtime / <b style="color:white">Production Simulation</b></span><span class="status">● ALL SYSTEMS NOMINAL</span></div>
+        <div class="workspace">
+          <div class="workspace-head"><div><h3>Agent Workflow Console</h3><span class="small">See a business request become a governed system action.</span></div><select class="select" id="scenarioSelect"><option value="support">Customer support</option><option value="risk">High-risk approval</option><option value="failure">Failure recovery</option></select></div>
+          <div class="scenario">
+            <div class="glass console">
+              <div class="console-title"><span>LIVE EVENT STREAM</span><span id="eventState">READY</span></div>
+              <div class="terminal" id="terminal">
+                <div class="log"><span class="info">[ui]</span> Waiting for workflow input…</div>
+                <div class="log"><span class="info">[runtime]</span> Shared action layer online.</div>
+                <div class="log"><span class="ok">[security]</span> Tenant context locked: ACME-01.</div>
+                <div class="log"><span class="ok">[observability]</span> Trace collector ready.</div>
+                <div class="log"><span class="info">[demo]</span> Select a scenario below.<span class="cursor"></span></div>
+              </div>
+              <div class="runrow">
+                <button class="runbtn mainrun" onclick="runDemo()">▶ Run workflow</button>
+                <button class="runbtn" onclick="resetDemo()">↻ Reset</button>
+                <button class="runbtn" onclick="runApproval()">⚿ Approval test</button>
+                <button class="runbtn" onclick="runTenantAttack()">⌁ Tenant isolation</button>
+              </div>
+            </div>
+            <div class="sidepanel">
+              <div class="metric"><div class="metric-head"><span>Agent confidence</span><span id="confidence">—</span></div><b id="confidenceBig">—</b><div class="bar"><i id="confidenceBar" style="width:10%"></i></div></div>
+              <div class="metric"><div class="metric-head"><span>Event throughput</span><span>live</span></div><b id="throughput">0</b><div class="bar"><i id="throughputBar" style="width:12%"></i></div></div>
+              <div class="flow"><div class="flow-title">WORKFLOW STATE</div>
+                <div class="step" id="s1"><i></i>Request received</div><div class="step" id="s2"><i></i>Agent reasoning</div><div class="step" id="s3"><i></i>Policy evaluation</div><div class="step" id="s4"><i></i>Command / approval</div><div class="step" id="s5"><i></i>Event propagation</div><div class="step" id="s6"><i></i>State + telemetry</div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section id="agents" class="section container">
+  <div class="section-head reveal"><div><div class="eyebrow">03 / MULTI-AGENT RUNTIME</div><h2 class="h2">Four specialists.<br>One governed runtime.</h2></div><p class="lead">Each agent has a clear business responsibility, while the platform controls permissions, context, actions and approvals.</p></div>
+  <div class="agents">
+    <article class="glass agent-card reveal"><div class="ring"></div><h3>Sales</h3><p>Pipeline intelligence, lead qualification and workflow assistance.</p><div class="tagrow"><span class="tag">CRM</span><span class="tag">Actions</span></div></article>
+    <article class="glass agent-card reveal"><div class="ring"></div><h3>Support</h3><p>Customer context, issue resolution and escalation workflows.</p><div class="tagrow"><span class="tag">Tickets</span><span class="tag">Context</span></div></article>
+    <article class="glass agent-card reveal"><div class="ring"></div><h3>Compliance</h3><p>Risk detection, policy checks and human-controlled high-risk actions.</p><div class="tagrow"><span class="tag">Policies</span><span class="tag">Approval</span></div></article>
+    <article class="glass agent-card reveal"><div class="ring"></div><h3>Analytics</h3><p>Business signals, trend analysis and operational intelligence.</p><div class="tagrow"><span class="tag">Insights</span><span class="tag">Telemetry</span></div></article>
+  </div>
+  <div class="glass" style="padding:25px;margin-top:14px;overflow:hidden">
+    <div class="eyebrow">AGENT COLLABORATION</div>
+    <div class="timeline">
+      <div class="tl"><span class="tl-dot">01</span><label>Request</label></div><div class="tl"><span class="tl-dot">02</span><label>Specialist</label></div><div class="tl"><span class="tl-dot">03</span><label>Policy</label></div><div class="tl"><span class="tl-dot">04</span><label>Approval</label></div><div class="tl"><span class="tl-dot">05</span><label>Action</label></div><div class="tl"><span class="tl-dot">06</span><label>Observe</label></div>
+    </div>
+  </div>
+</section>
+
+<section id="security" class="section container">
+  <div class="section-head reveal"><div><div class="eyebrow">04 / SECURITY BY DESIGN</div><h2 class="h2">The agent can act.<br>The platform decides what it may do.</h2></div><p class="lead">Tenant isolation and human approval are shown as first-class runtime controls, not footnotes.</p></div>
+  <div class="security">
+    <div class="glass tenant reveal"><div class="eyebrow">MULTI-TENANT ISOLATION</div><h3>Database-enforced boundaries</h3><div class="tenant-box"><div class="tenant-col"><b>ACME / tenant_01</b><div class="record">customers: 12,842</div><div class="record">invoices: 8,214</div><div class="record">events: 44,821</div></div><div class="tenant-col"><b>GLOBEX / tenant_02</b><div class="record">customers: 9,102</div><div class="record">invoices: 6,440</div><div class="record">events: 31,093</div></div></div><div class="attack" onclick="tenantBlock()">Attempt cross-tenant access →</div><div id="blocked" class="blocked">✓ REQUEST BLOCKED — PostgreSQL RLS policy rejected the foreign tenant context.</div></div>
+    <div class="glass tenant reveal"><div class="eyebrow">HUMAN-IN-THE-LOOP</div><h3>High-risk actions stop before execution</h3><div class="metric" style="margin-top:24px"><div class="metric-head"><span>Requested action</span><span style="color:#fcd34d">HIGH RISK</span></div><b style="font-size:18px">Issue $2,450 enterprise refund</b><p class="small">Compliance policy requires explicit human approval before the command can be committed.</p></div><div class="runrow"><button class="runbtn" onclick="approval('reject')">Reject</button><button class="runbtn mainrun" onclick="approval('approve')">Approve action</button></div><div id="approvalMsg" class="blocked" style="display:block;margin-top:14px;background:rgba(251,191,36,.04);border-color:rgba(251,191,36,.2);color:#fcd34d">Awaiting authorized decision…</div></div>
+  </div>
+</section>
+
+<section id="architecture" class="section container">
+  <div class="section-head reveal"><div><div class="eyebrow">05 / DISTRIBUTED SYSTEMS</div><h2 class="h2">Commands become events.<br>Events become durable state.</h2></div><p class="lead">CQRS, Event Sourcing, transactional outbox and idempotent consumers create a workflow that can be traced, replayed and recovered.</p></div>
+  <div class="glass arch reveal">
+    <div class="arch-grid">
+      <div class="arch-layer"><strong>Experience</strong><span>React</span><span>Lit</span><span>Web Components</span><span>GraphQL</span></div>
+      <div class="connector"></div>
+      <div class="arch-layer"><strong>Runtime</strong><span>AI Agents</span><span>Shared Actions</span><span>Policy Engine</span><span>Workflow</span></div>
+      <div class="connector"></div>
+      <div class="arch-layer"><strong>Commands</strong><span>CQRS</span><span>Validation</span><span>Transactional Outbox</span></div>
+      <div class="connector"></div>
+      <div class="arch-layer"><strong>Events</strong><span>Kafka</span><span>Idempotent Consumers</span><span>Event Sourcing</span></div>
+      <div class="connector"></div>
+      <div class="arch-layer"><strong>Data</strong><span>PostgreSQL + RLS</span><span>Redis</span><span>Weaviate</span></div>
+      <div class="connector"></div>
+      <div class="arch-layer"><strong>Observe</strong><span>OpenTelemetry</span><span>Prometheus</span><span>Grafana</span><span>Loki</span></div>
+    </div>
+  </div>
+</section>
+
+<section class="section container">
+  <div class="section-head reveal"><div><div class="eyebrow">06 / RELIABILITY LAB</div><h2 class="h2">Designed for failure,<br>not just success.</h2></div><p class="lead">Use the simulator to understand why idempotency, circuit breakers and recovery targets matter in distributed systems.</p></div>
+  <div class="lab-grid">
+    <div class="glass lab reveal"><h3>Failure simulator</h3><p class="small">Trigger a failure and watch the runtime transition through protection and recovery states.</p><div class="failure"><button onclick="failure('kafka')">Kill consumer</button><button onclick="failure('db')">Database timeout</button><button onclick="failure('duplicate')">Duplicate event</button><button onclick="failure('network')">Network fault</button></div><div class="recovery"><div id="failureState" class="state">CLOSED</div><div id="failureSub" class="substate">Runtime accepting normal traffic</div></div></div>
+    <div class="glass lab reveal"><h3>Recovery objectives</h3><p class="small">Documented targets from the project specification.</p><div class="statbar" style="margin-top:20px"><div class="stat"><b>5m</b><span>RPO target</span></div><div class="stat"><b>30m</b><span>RTO target</span></div></div><div style="margin-top:18px;padding:16px;border:1px solid var(--line);border-radius:14px"><div class="small">Simulated failover</div><div class="bar" style="margin-top:12px"><i id="recoveryBar" style="width:6%"></i></div><div id="recoveryText" class="small" style="margin-top:9px">Standby region ready.</div></div></div>
+  </div>
+</section>
+
+<section id="observability" class="section container">
+  <div class="section-head reveal"><div><div class="eyebrow">07 / RUNTIME INTELLIGENCE</div><h2 class="h2">Every important decision<br>leaves a trace.</h2></div><p class="lead">The observability layer connects business intent with infrastructure behavior so teams can see what the system actually did.</p></div>
+  <div class="observability">
+    <div class="glass chart reveal">
+      <div style="display:flex;justify-content:space-between"><div><b>Runtime telemetry</b><div class="small">Simulated live signal</div></div><span class="status">● STREAMING</span></div>
+      <svg viewBox="0 0 700 280" preserveAspectRatio="none">
+        <defs><linearGradient id="area" x1="0" x2="0" y1="0" y2="1"><stop stop-color="#5ee7ff" stop-opacity=".22"/><stop offset="1" stop-color="#5ee7ff" stop-opacity="0"/></linearGradient></defs>
+        <path d="M0 230 L45 210 L90 218 L135 180 L180 195 L225 135 L270 160 L315 118 L360 145 L405 85 L450 110 L495 72 L540 100 L585 55 L630 90 L700 48 L700 280 L0 280Z" fill="url(#area)"/>
+        <path d="M0 230 L45 210 L90 218 L135 180 L180 195 L225 135 L270 160 L315 118 L360 145 L405 85 L450 110 L495 72 L540 100 L585 55 L630 90 L700 48" fill="none" stroke="#6fe8ff" stroke-width="2"/>
+      </svg>
+      <div class="tech"><span>P95 latency 142ms*</span><span>Trace depth 8</span><span>Errors 0.12%*</span><span>Events 8.4K/s*</span></div>
+      <div class="small" style="margin-top:12px">*Illustrative demo telemetry, not a production measurement.</div>
+    </div>
+    <div class="glass trace-card reveal"><div class="eyebrow">OPEN TELEMETRY TRACE</div><div style="font-size:16px;font-weight:800;margin:10px 0 12px">customer.refund.execute</div><div class="trace-row"><b>React UI</b><span>12ms</span></div><div class="trace-row"><b>GraphQL</b><span>8ms</span></div><div class="trace-row"><b>Support Agent</b><span>31ms</span></div><div class="trace-row"><b>Policy Engine</b><span>9ms</span></div><div class="trace-row"><b>Kafka publish</b><span>18ms</span></div><div class="trace-row"><b>PostgreSQL</b><span>27ms</span></div><div class="trace-row"><b>Audit event</b><span>11ms</span></div></div>
+  </div>
+</section>
+
+<section class="section container">
+  <div class="section-head reveal"><div><div class="eyebrow">08 / COMPONENT RUNTIME</div><h2 class="h2">Components become<br>AI-operable capabilities.</h2></div><p class="lead">The platform treats the interface as part of the agent's environment: inspectable, contextual and action-aware.</p></div>
+  <div class="glass recruiter reveal">
+    <div>
+      <div class="eyebrow">COMPONENT → ACTION → AGENT</div>
+      <div style="margin-top:18px;padding:18px;border:1px solid var(--line);border-radius:14px;background:#05080e;font-family:ui-monospace,monospace;font-size:12px;line-height:1.9;color:#aab8cc">
+        <span style="color:#a78bfa">&lt;SmartTable</span><br>
+        &nbsp;&nbsp;data=<span style="color:#6ee7b7">"customers"</span><br>
+        &nbsp;&nbsp;agent=<span style="color:#6ee7b7">"analytics"</span><br>
+        &nbsp;&nbsp;runtimeAware<br>
+        <span style="color:#a78bfa">/&gt;</span>
+      </div>
+    </div>
+    <div>
+      <div class="small">A component can expose structured application capabilities instead of forcing an agent to “click around” blindly.</div>
+      <div class="timeline" style="margin-bottom:0"><div class="tl"><span class="tl-dot">1</span><label>Render</label></div><div class="tl"><span class="tl-dot">2</span><label>Context</label></div><div class="tl"><span class="tl-dot">3</span><label>Action</label></div><div class="tl"><span class="tl-dot">4</span><label>Observe</label></div></div>
+    </div>
+  </div>
+</section>
+
+<section class="section container">
+  <div class="section-head reveal"><div><div class="eyebrow">09 / ENGINEERING DECISIONS</div><h2 class="h2">The architecture is there<br>for a reason.</h2></div></div>
+  <div class="decision-grid">
+    <article class="glass decision reveal"><h3>Why Kafka?</h3><p>Decouples producers from downstream consumers and lets multiple services react to the same business event.</p></article>
+    <article class="glass decision reveal"><h3>Why CQRS?</h3><p>Separates command-side business operations from read-side application views so each can evolve independently.</p></article>
+    <article class="glass decision reveal"><h3>Why Event Sourcing?</h3><p>Preserves a durable sequence of state-changing events and enables state reconstruction and replay.</p></article>
+    <article class="glass decision reveal"><h3>Why RLS?</h3><p>Moves tenant isolation into the database boundary instead of relying only on application-level filtering.</p></article>
+    <article class="glass decision reveal"><h3>Why Outbox?</h3><p>Coordinates database state changes with reliable event publication and reduces dual-write failure modes.</p></article>
+    <article class="glass decision reveal"><h3>Why HITL?</h3><p>High-risk autonomous actions stop for explicit authorization before a side effect is committed.</p></article>
+  </div>
+</section>
+
+<section class="section container">
+  <div class="section-head reveal"><div><div class="eyebrow">10 / STACK</div><h2 class="h2">Built across the<br>full application boundary.</h2></div></div>
+  <div class="glass" style="padding:28px">
+    <div class="tech">
+      <span>TypeScript</span><span>React</span><span>Lit</span><span>Web Components</span><span>Java 21</span><span>Spring Boot</span><span>GraphQL</span><span>LangGraph</span><span>Kafka</span><span>PostgreSQL</span><span>PostgreSQL RLS</span><span>Redis</span><span>Weaviate</span><span>OpenTelemetry</span><span>Prometheus</span><span>Grafana</span><span>Loki</span><span>Playwright</span><span>Vitest</span><span>Docker</span><span>Kubernetes</span>
+    </div>
+  </div>
+</section>
+
+<section class="section container">
+  <div class="glass recruiter reveal">
+    <div>
+      <div class="eyebrow">RECRUITER VIEW</div>
+      <h2 style="font-size:38px;line-height:1;letter-spacing:-.04em;margin:16px 0">What was engineered?</h2>
+      <div class="checklist">
+        <div class="check">Multi-tenant architecture</div><div class="check">4 specialist AI agents</div>
+        <div class="check">Event-driven backend</div><div class="check">CQRS + Event Sourcing</div>
+        <div class="check">Transactional Outbox</div><div class="check">Idempotent consumers</div>
+        <div class="check">Circuit breakers</div><div class="check">PostgreSQL RLS</div>
+        <div class="check">Human-in-the-loop controls</div><div class="check">Runtime observability</div>
+        <div class="check">Automated testing</div><div class="check">Docker + Kubernetes</div>
+      </div>
+    </div>
+    <div class="resume-box">
+      <h3>UIFabric</h3>
+      <p><b style="color:#eaf4ff">AI-Native Component Development & Runtime Intelligence Platform</b></p>
+      <p>Architected a multi-tenant AI CRM with Sales, Support, Compliance and Analytics agents using LangGraph, Kafka, PostgreSQL RLS and Weaviate, with CI-verified cross-tenant blocking and human approval for high-risk actions.</p>
+      <p>Engineered CQRS/Event Sourcing, transactional outbox, idempotent consumers, circuit breakers and production observability with documented 5-minute RPO / 30-minute RTO targets.</p>
+      <button class="btn primary" onclick="showToast('Recruiter summary ready — scroll through the interactive system to inspect the engineering decisions.')">View project story</button>
+    </div>
+  </div>
+</section>
+
+<footer>
+  <div class="container footer-inner">
+    <div><div class="footer-brand">UIFabric</div><div class="small">AI-native interfaces. Event-driven infrastructure. Runtime intelligence.</div></div>
+    <div class="footer-links"><a href="#demo">Live Demo</a><a href="#architecture">Architecture</a><a href="#security">Security</a><a href="#observability">Runtime</a><a href="#top">Back to top ↑</a></div>
+  </div>
+</footer>
+</main>
+
+<div id="architectureModal" class="modal" onclick="if(event.target===this)closeArchitecture()">
+  <div class="modal-card">
+    <div class="modal-top"><div><div class="eyebrow">3D ARCHITECTURE EXPLORER</div><h3 style="margin:6px 0">Rotate the platform</h3></div><button class="close" onclick="closeArchitecture()">×</button></div>
+    <div class="architecture3d" id="arch3d">
+      <div class="orbit o1"><i class="orbit-dot"></i></div><div class="orbit o2"><i class="orbit-dot"></i></div>
+      <div class="cube" id="cube"><div class="face f1">UI / EXPERIENCE</div><div class="face f2">OBSERVABILITY</div><div class="face f3">AGENT RUNTIME</div><div class="face f4">EVENT SYSTEM</div><div class="face f5">DATA + SECURITY</div><div class="face f6">RECOVERY</div></div>
+    </div>
+    <div class="modal-caption"><span>Drag to rotate • Every layer is connected through the runtime</span><span>UIFabric / system map</span></div>
+  </div>
+</div>
+<div id="toast" class="toast"></div>
+
+<script>
+const $=s=>document.querySelector(s);
+const sleep=ms=>new Promise(r=>setTimeout(r,ms));
+let running=false;
+const logs={
+ support:[
+  ['info','[request] Customer: “I was charged twice for my subscription.”'],
+  ['info','[support-agent] Loading customer context and transaction history…'],
+  ['ok','[support-agent] Duplicate charge detected. Confidence: 96%.'],
+  ['ok','[policy] Refund is within low-risk support policy.'],
+  ['info','[command] refund.create → validated.'],
+  ['ok','[outbox] Command committed with transactional event.'],
+  ['info','[kafka] payment.refund.created published.'],
+  ['ok','[consumer] Idempotency check passed. Side effect applied once.'],
+  ['ok','[postgres] Customer state updated.'],
+  ['ok','[otel] Trace recorded: customer.refund.execute']
+ ],
+ risk:[
+  ['info','[request] Enterprise refund requested: $2,450.'],
+  ['info','[compliance-agent] Evaluating risk policy…'],
+  ['warn','[policy] HIGH-RISK ACTION → human approval required.'],
+  ['warn','[runtime] Execution paused before side effect.'],
+  ['info','[approval] Waiting for authorized reviewer…'],
+  ['ok','[approval] Decision received: APPROVED.'],
+  ['info','[command] refund.create → committed.'],
+  ['info','[kafka] approval.granted + payment.refund.created'],
+  ['ok','[audit] Decision and actor recorded.'],
+  ['ok','[otel] Full workflow trace closed successfully.']
+ ],
+ failure:[
+  ['info','[traffic] Normal event processing active.'],
+  ['bad','[fault] Kafka consumer stopped responding.'],
+  ['warn','[circuit-breaker] Failure threshold reached → OPEN.'],
+  ['warn','[runtime] New side effects temporarily blocked.'],
+  ['info','[retry] Event retained for safe reprocessing.'],
+  ['ok','[recovery] Consumer restored → HALF-OPEN.'],
+  ['ok','[idempotency] Replayed event recognized safely.'],
+  ['ok','[circuit-breaker] Recovery confirmed → CLOSED.'],
+  ['ok','[telemetry] Incident trace retained for analysis.']
+ ]
+};
+function setStep(n){for(let i=1;i<=6;i++){const e=$('#s'+i);e.classList.remove('active','done');if(i<n)e.classList.add('done');if(i===n)e.classList.add('active')}}
+async function runDemo(){
+ if(running)return;running=true;resetSteps();
+ const type=$('#scenarioSelect').value; const arr=logs[type]; const term=$('#terminal'); term.innerHTML='';
+ $('#eventState').textContent='RUNNING'; $('#confidenceBig').textContent=type==='risk'?'93%':type==='failure'?'—':'96%'; $('#confidence').textContent=type==='risk'?'high':type==='failure'?'fault simulation':'high'; $('#confidenceBar').style.width=type==='risk'?'93%':type==='failure'?'38%':'96%';
+ const stepMap=type==='failure'?[1,2,3,4,5,6,6,6,6]:[1,2,3,4,5,5,5,6,6,6];
+ for(let i=0;i<arr.length;i++){setStep(stepMap[i]||6); await sleep(480); const [cls,msg]=arr[i];const d=document.createElement('div');d.className='log';d.innerHTML='<span class="'+cls+'">'+msg+'</span>';term.appendChild(d);term.scrollTop=term.scrollHeight;$('#throughput').textContent=(3200+i*620).toLocaleString();$('#throughputBar').style.width=Math.min(96,18+i*8)+'%';}
+ $('#eventState').textContent=type==='failure'?'RECOVERED':'COMPLETED';setStep(6);running=false;showToast(type==='risk'?'Approval gate completed. Event flow resumed.':type==='failure'?'Failure contained and consumer recovered.':'Workflow completed end-to-end.');
+}
+function resetSteps(){for(let i=1;i<=6;i++)$('#s'+i).classList.remove('active','done')}
+function resetDemo(){running=false;resetSteps();$('#eventState').textContent='READY';$('#confidenceBig').textContent='—';$('#confidence').textContent='—';$('#confidenceBar').style.width='10%';$('#throughput').textContent='0';$('#throughputBar').style.width='12%';$('#terminal').innerHTML='<div class="log"><span class="info">[ui]</span> Waiting for workflow input…</div><div class="log"><span class="info">[runtime]</span> Shared action layer online.</div><div class="log"><span class="ok">[security]</span> Tenant context locked: ACME-01.</div><div class="log"><span class="ok">[observability]</span> Trace collector ready.</div><div class="log"><span class="info">[demo]</span> Select a scenario below.<span class="cursor"></span></div>'}
+async function runApproval(){ $('#scenarioSelect').value='risk'; await runDemo(); }
+function tenantBlock(){const e=$('#blocked');e.classList.add('show');showToast('Cross-tenant request rejected at the database policy boundary.')}
+function approval(action){const e=$('#approvalMsg');if(action==='approve'){e.style.color='#86efac';e.style.borderColor='rgba(74,222,128,.2)';e.style.background='rgba(74,222,128,.04)';e.textContent='✓ APPROVED — command may proceed to event publication.';showToast('Human approval recorded.')}else{e.style.color='#fb9aa9';e.style.borderColor='rgba(251,113,133,.2)';e.style.background='rgba(251,113,133,.04)';e.textContent='✕ REJECTED — high-risk side effect blocked.';showToast('Action rejected before execution.')}}
+function runTenantAttack(){tenantBlock();document.querySelector('#security').scrollIntoView({behavior:'smooth'})}
+async function failure(kind){
+ const st=$('#failureState'), sub=$('#failureSub'), bar=$('#recoveryBar'), text=$('#recoveryText');
+ st.className='state red';st.textContent='OPEN';sub.textContent=kind==='duplicate'?'Duplicate detected — idempotency guard engaged.':'Failure detected — circuit breaker protecting the system.';bar.style.width='18%';text.textContent='Containment in progress…';await sleep(600);
+ if(kind==='duplicate'){st.className='state amber';st.textContent='DEDUP';sub.textContent='Repeated event rejected without duplicate side effect.'}else{st.className='state amber';st.textContent='HALF-OPEN';sub.textContent='Testing recovered dependency with controlled traffic.'}
+ bar.style.width='65%';text.textContent='Reprocessing retained event safely…';await sleep(700);st.className='state green';st.textContent='CLOSED';sub.textContent='Recovery confirmed — normal traffic restored.';bar.style.width='100%';text.textContent='Recovery complete. Event history preserved.';showToast('Failure simulation recovered successfully.')}
+function openArchitecture(){$('#architectureModal').classList.add('show');document.body.style.overflow='hidden'}
+function closeArchitecture(){$('#architectureModal').classList.remove('show');document.body.style.overflow=''}
+function showToast(t){const e=$('#toast');e.textContent=t;e.classList.add('show');clearTimeout(window.__toast);window.__toast=setTimeout(()=>e.classList.remove('show'),2600)}
+const io=new IntersectionObserver(es=>es.forEach(e=>{if(e.isIntersecting)e.target.classList.add('visible')}),{threshold:.12});document.querySelectorAll('.reveal').forEach(e=>io.observe(e));
+const stage=$('#arch3d'),cube=$('#cube');let drag=false,sx=0,sy=0,rx=-12,ry=-25;
+stage.addEventListener('pointerdown',e=>{drag=true;sx=e.clientX;sy=e.clientY;stage.setPointerCapture(e.pointerId)});
+stage.addEventListener('pointermove',e=>{if(!drag)return;ry+=(e.clientX-sx)*.35;rx-=(e.clientY-sy)*.25;sx=e.clientX;sy=e.clientY;cube.style.transform=`translate(-50%,-50%) rotateX(${rx}deg) rotateY(${ry}deg)`});
+stage.addEventListener('pointerup',()=>drag=false);stage.addEventListener('pointercancel',()=>drag=false);
+document.addEventListener('keydown',e=>{if(e.key==='Escape')closeArchitecture()});
+</script>
+</body>
+</html>

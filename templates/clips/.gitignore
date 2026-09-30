@@ -1,0 +1,10 @@
+build
+.output/
+
+.generated/
+
+.vercel/
+
+public/mediapipe/wasm/
+
+data/*.lock

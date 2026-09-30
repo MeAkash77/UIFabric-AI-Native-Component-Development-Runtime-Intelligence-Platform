@@ -1,0 +1,162 @@
+import { z } from "zod";
+
+import { defineAction } from "../../action.js";
+import { resolveAuditReadScope } from "../read-scope.js";
+import { MAX_LIMIT, queryAuditEvents } from "../store.js";
+import type { AuditEvent } from "../types.js";
+
+const DEFAULT_MAX_ROWS = 5000;
+const HARD_CAP_ROWS = 10000;
+
+const CSV_COLUMNS: Array<[key: keyof AuditEvent, header: string]> = [
+  ["id", "id"],
+  ["createdAt", "created_at"],
+  ["action", "action"],
+  ["caller", "caller"],
+  ["actorKind", "actor_kind"],
+  ["actorEmail", "actor_email"],
+  ["orgId", "org_id"],
+  ["threadId", "thread_id"],
+  ["turnId", "turn_id"],
+  ["targetType", "target_type"],
+  ["targetId", "target_id"],
+  ["status", "status"],
+  ["summary", "summary"],
+  ["errorCode", "error_code"],
+  ["ownerEmail", "owner_email"],
+  ["visibility", "visibility"],
+  ["app", "app"],
+];
+
+function csvField(value: unknown): string {
+  if (value === null || value === undefined) return "";
+  const raw = String(value);
+  if (/[",\n\r]/.test(raw)) {
+    return `"${raw.replace(/"/g, '""')}"`;
+  }
+  return raw;
+}
+
+function toCsv(events: AuditEvent[]): string {
+  const header = CSV_COLUMNS.map(([, label]) => label).join(",");
+  const rows = events.map((event) =>
+    CSV_COLUMNS.map(([key]) => csvField(event[key])).join(","),
+  );
+  return [header, ...rows].join("\n");
+}
+
+function toNdjson(events: AuditEvent[]): string {
+  return events.map((event) => JSON.stringify(event)).join("\n");
+}
+
+export default defineAction({
+  description:
+    "Export audit-log events as a CSV or NDJSON document for offline/compliance pulls (up to maxRows, default 5000, hard cap 10000). Use this instead of hand-paging list-audit-events when you need a bulk download of the trail; use list-audit-events instead for browsing recent activity or answering 'what changed'.",
+  schema: z.object({
+    scope: z
+      .enum(["accessible", "organization"])
+      .optional()
+      .describe(
+        "'accessible' (default): your own events plus events shared with your organization. 'organization': only the organization's shared trail, for owners and admins.",
+      ),
+    targetType: z
+      .string()
+      .optional()
+      .describe("Filter to one resource type, e.g. 'recording'."),
+    targetId: z
+      .string()
+      .optional()
+      .describe("Filter to one resource id (pair with targetType)."),
+    actorKind: z
+      .enum(["agent", "human", "system"])
+      .optional()
+      .describe("Filter to changes made by the agent, a human, or the system."),
+    actorEmail: z.string().optional().describe("Filter to one actor's email."),
+    status: z
+      .enum(["success", "error", "denied"])
+      .optional()
+      .describe("Filter by outcome."),
+    threadId: z.string().optional().describe("Filter to one agent thread."),
+    turnId: z
+      .string()
+      .optional()
+      .describe("Filter to one agent turn (a single agent response)."),
+    action: z.string().optional().describe("Filter to one action name."),
+    app: z
+      .string()
+      .optional()
+      .describe("Filter to events recorded by one app id, e.g. 'mail'."),
+    sinceMs: z
+      .number()
+      .optional()
+      .describe("Only events at or after this Unix epoch (ms)."),
+    beforeMs: z
+      .number()
+      .optional()
+      .describe("Only events strictly before this Unix epoch (ms)."),
+    format: z
+      .enum(["csv", "ndjson"])
+      .default("csv")
+      .describe(
+        "Export format — CSV with a header row, or one JSON event per line.",
+      ),
+    maxRows: z
+      .number()
+      .optional()
+      .describe("Max rows to export (default 5000, hard cap 10000)."),
+  }),
+  http: { method: "GET" },
+  audit: {
+    onRead: true,
+    summary: (args) =>
+      `Bulk export of audit events (${(args as { format?: string }).format ?? "csv"})`,
+  },
+  run: async (args, ctx) => {
+    const scope = await resolveAuditReadScope(ctx, args.scope);
+    const cap = Math.min(
+      Math.max(1, Math.floor(args.maxRows ?? DEFAULT_MAX_ROWS)),
+      HARD_CAP_ROWS,
+    );
+
+    const filters = {
+      ...(args.targetType ? { targetType: args.targetType } : {}),
+      ...(args.targetId ? { targetId: args.targetId } : {}),
+      ...(args.actorKind ? { actorKind: args.actorKind } : {}),
+      ...(args.actorEmail ? { actorEmail: args.actorEmail } : {}),
+      ...(args.status ? { status: args.status } : {}),
+      ...(args.threadId ? { threadId: args.threadId } : {}),
+      ...(args.turnId ? { turnId: args.turnId } : {}),
+      ...(args.action ? { action: args.action } : {}),
+      ...(args.app ? { app: args.app } : {}),
+      ...(typeof args.sinceMs === "number" ? { sinceMs: args.sinceMs } : {}),
+      ...(typeof args.beforeMs === "number" ? { beforeMs: args.beforeMs } : {}),
+    };
+
+    const events: AuditEvent[] = [];
+    let offset = 0;
+    while (events.length < cap) {
+      const pageLimit = Math.min(MAX_LIMIT, cap - events.length);
+      const page = await queryAuditEvents(scope, {
+        ...filters,
+        limit: pageLimit,
+        offset,
+      });
+      events.push(...page);
+      offset += page.length;
+      if (page.length < pageLimit) break;
+    }
+
+    let truncated = false;
+    if (events.length >= cap) {
+      const probe = await queryAuditEvents(scope, {
+        ...filters,
+        limit: 1,
+        offset,
+      });
+      truncated = probe.length > 0;
+    }
+
+    const content = args.format === "ndjson" ? toNdjson(events) : toCsv(events);
+    return { content, rowCount: events.length, truncated, format: args.format };
+  },
+});

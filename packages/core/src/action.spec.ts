@@ -1,0 +1,1183 @@
+import { describe, it, expect, vi } from "vitest";
+import { z } from "zod";
+
+import {
+  defineAction,
+  ActionContractError,
+  isActionContractError,
+  AgentActionStopError,
+  AgentConnectionRequiredError,
+  isAgentActionStopError,
+  isAgentConnectionRequiredError,
+  isActionExposedToExternalAgents,
+  isActionHiddenFromEveryAgentSurface,
+  validateActionArgs,
+} from "./action.js";
+
+describe("ActionContractError", () => {
+  it("carries only explicitly safe structured contract details", () => {
+    const error = new ActionContractError("Stale schema", {
+      errorCode: "SCHEMA_REVISION_CONFLICT",
+      details: { expected: "before", actual: "after" },
+    });
+    expect(isActionContractError(error)).toBe(true);
+    expect(error).toMatchObject({
+      statusCode: 409,
+      errorCode: "SCHEMA_REVISION_CONFLICT",
+      details: { expected: "before", actual: "after" },
+    });
+  });
+});
+
+describe("defineAction", () => {
+  it("infers readOnly=true for GET actions", () => {
+    const action = defineAction({
+      description: "read things",
+      parameters: { id: { type: "string" } },
+      http: { method: "GET" },
+      run: async () => ({ ok: true }),
+    });
+    expect(action.readOnly).toBe(true);
+  });
+
+  it("carries the grounding declaration through to the entry", () => {
+    const action = defineAction({
+      description: "query a provider",
+      parameters: { q: { type: "string" } },
+      http: false,
+      grounding: true,
+      run: async () => "ok",
+    });
+    expect(action.grounding).toBe(true);
+  });
+
+  it("leaves grounding undefined when the action does not declare it", () => {
+    const action = defineAction({
+      description: "list saved config",
+      parameters: { id: { type: "string" } },
+      http: { method: "GET" },
+      run: async () => "ok",
+    });
+    expect(action.grounding).toBeUndefined();
+  });
+
+  it("leaves readOnly undefined for default POST actions", () => {
+    const action = defineAction({
+      description: "write things",
+      parameters: { value: { type: "string" } },
+      run: async () => ({ ok: true }),
+    });
+    expect(action.readOnly).toBeUndefined();
+  });
+
+  it("leaves readOnly undefined when http is false (agent-only)", () => {
+    const action = defineAction({
+      description: "agent-only",
+      parameters: { x: { type: "string" } },
+      http: false,
+      run: async () => "ok",
+    });
+    expect(action.readOnly).toBeUndefined();
+  });
+
+  it("leaves readOnly undefined for explicit POST", () => {
+    const action = defineAction({
+      description: "post",
+      parameters: { x: { type: "string" } },
+      http: { method: "POST" },
+      run: async () => "ok",
+    });
+    expect(action.readOnly).toBeUndefined();
+  });
+
+  it("honors explicit readOnly=true even on POST", () => {
+    const action = defineAction({
+      description: "read-only post",
+      parameters: { x: { type: "string" } },
+      http: { method: "POST" },
+      readOnly: true,
+      run: async () => "ok",
+    });
+    expect(action.readOnly).toBe(true);
+  });
+
+  it("honors explicit readOnly=false even on GET (overrides method inference)", () => {
+    const action = defineAction({
+      description: "mutating get",
+      parameters: { x: { type: "string" } },
+      http: { method: "GET" },
+      readOnly: false,
+      run: async () => "ok",
+    });
+    expect(action.readOnly).toBe(false);
+  });
+
+  it("preserves explicit parallelSafe metadata", () => {
+    const action = defineAction({
+      description: "safe same-turn write",
+      parameters: { x: { type: "string" } },
+      parallelSafe: true,
+      run: async () => "ok",
+    });
+    expect(action.parallelSafe).toBe(true);
+  });
+
+  it("preserves explicit endsTurn metadata", () => {
+    const action = defineAction({
+      description: "puts a question form on screen",
+      parameters: { x: { type: "string" } },
+      endsTurn: true,
+      run: async () => "ok",
+    });
+    expect(action.endsTurn).toBe(true);
+  });
+
+  it("preserves explicit duplicate-read opt-out metadata", () => {
+    const action = defineAction({
+      description: "volatile polling read",
+      parameters: { id: { type: "string" } },
+      readOnly: true,
+      dedupe: false,
+      run: async () => "ok",
+    });
+    expect(action.dedupe).toBe(false);
+  });
+
+  it("preserves a typed Plan-mode effect policy", () => {
+    const classify = (args: { operation?: string }): "read" | "write" =>
+      args.operation === "list" ? "read" : "write";
+    const action = defineAction({
+      description: "Manage records",
+      parameters: {
+        operation: {
+          type: "string",
+          enum: ["list", "create"],
+        },
+        persist: { type: "string" },
+      },
+      planMode: {
+        effect: classify,
+        allowedValues: { operation: ["list"] },
+        allowedProperties: ["operation"],
+        requiredProperties: ["operation"],
+        omittedProperties: ["persist"],
+        description: "Only listing is available.",
+      },
+      run: async () => "ok",
+    });
+
+    expect(action.planMode).toEqual({
+      effect: classify,
+      allowedValues: { operation: ["list"] },
+      allowedProperties: ["operation"],
+      requiredProperties: ["operation"],
+      omittedProperties: ["persist"],
+      description: "Only listing is available.",
+    });
+  });
+
+  it("preserves per-tool timeout and result limits", () => {
+    const action = defineAction({
+      description: "slow provider call",
+      parameters: { x: { type: "string" } },
+      timeoutMs: 120_000,
+      maxResultChars: 10_000,
+      run: async () => "ok",
+    });
+    expect(action.timeoutMs).toBe(120_000);
+    expect(action.maxResultChars).toBe(10_000);
+  });
+
+  it("threads through agentTool:false (frontend/HTTP-only, hidden from the agent)", () => {
+    const action = defineAction({
+      description: "sync UI selection",
+      parameters: { id: { type: "string" } },
+      agentTool: false,
+      run: async () => "ok",
+    });
+    expect(action.agentTool).toBe(false);
+  });
+
+  it("leaves agentTool undefined when not specified (default-exposed)", () => {
+    const action = defineAction({
+      description: "normal action",
+      parameters: { id: { type: "string" } },
+      run: async () => "ok",
+    });
+    expect(action.agentTool).toBeUndefined();
+  });
+
+  it("threads through mcpTool and deferLoading, and leaves both undefined by default", () => {
+    const external = defineAction({
+      description: "share a plan with an external agent",
+      parameters: { id: { type: "string" } },
+      mcpTool: true,
+      deferLoading: false,
+      run: async () => "ok",
+    });
+    expect(external.mcpTool).toBe(true);
+    expect(external.deferLoading).toBe(false);
+
+    const inAppOnly = defineAction({
+      description: "open the inspector panel",
+      parameters: { id: { type: "string" } },
+      mcpTool: false,
+      deferLoading: true,
+      run: async () => "ok",
+    });
+    expect(inAppOnly.mcpTool).toBe(false);
+    expect(inAppOnly.deferLoading).toBe(true);
+
+    const plain = defineAction({
+      description: "normal action",
+      parameters: { id: { type: "string" } },
+      run: async () => "ok",
+    });
+    expect(plain.mcpTool).toBeUndefined();
+    expect(plain.deferLoading).toBeUndefined();
+  });
+
+  it("resolves external exposure from mcpTool, falling back to agentTool", () => {
+    expect(isActionExposedToExternalAgents({})).toBe(true);
+    expect(isActionExposedToExternalAgents({ agentTool: false })).toBe(false);
+    expect(isActionExposedToExternalAgents({ mcpTool: false })).toBe(false);
+    expect(
+      isActionExposedToExternalAgents({ agentTool: false, mcpTool: true }),
+    ).toBe(true);
+    expect(
+      isActionExposedToExternalAgents({ agentTool: true, mcpTool: false }),
+    ).toBe(false);
+
+    expect(isActionExposedToExternalAgents({ endsTurn: true })).toBe(false);
+    expect(
+      isActionExposedToExternalAgents({ uiOnly: true, mcpTool: true }),
+    ).toBe(false);
+    expect(
+      isActionExposedToExternalAgents({ endsTurn: true, agentTool: true }),
+    ).toBe(false);
+    expect(
+      isActionExposedToExternalAgents({ endsTurn: true, mcpTool: true }),
+    ).toBe(true);
+
+    expect(isActionHiddenFromEveryAgentSurface({ agentTool: false })).toBe(
+      true,
+    );
+    expect(
+      isActionHiddenFromEveryAgentSurface({ agentTool: false, mcpTool: true }),
+    ).toBe(false);
+    expect(isActionHiddenFromEveryAgentSurface({ mcpTool: false })).toBe(false);
+    expect(isActionHiddenFromEveryAgentSurface({ uiOnly: true })).toBe(true);
+  });
+
+  it("requires the frontend caller for UI-only actions", async () => {
+    const run = vi.fn(async () => "ok");
+    const action = defineAction({
+      description: "delete data",
+      parameters: {},
+      uiOnly: true,
+      run,
+    });
+
+    await expect(action.run({}, { caller: "tool" })).rejects.toMatchObject({
+      errorCode: "ui_only_action",
+      statusCode: 403,
+    });
+    await expect(action.run({}, { caller: "frontend" })).resolves.toBe("ok");
+    expect(run).toHaveBeenCalledOnce();
+  });
+
+  it("preserves valid MCP Apps resource metadata", () => {
+    const action = defineAction({
+      description: "review draft",
+      parameters: { body: { type: "string" } },
+      mcpApp: {
+        visibility: ["model", "app"],
+        resource: {
+          title: "Review draft",
+          html: "<!doctype html><html><body>Review</body></html>",
+          csp: { connectDomains: ["https://mail.agent-native.com"] },
+        },
+      },
+      run: async () => "ok",
+    });
+    expect(action.mcpApp?.resource.title).toBe("Review draft");
+    expect(action.mcpApp?.resource.csp).toEqual({
+      connectDomains: ["https://mail.agent-native.com"],
+    });
+  });
+
+  it("preserves an action title for WebMCP and MCP hosts", () => {
+    const action = defineAction({
+      title: "Review draft",
+      description: "review draft",
+      parameters: {},
+      run: async () => "ok",
+    });
+
+    expect(action.tool.title).toBe("Review draft");
+  });
+
+  it("drops malformed MCP Apps config", () => {
+    const action = defineAction({
+      description: "bad ui",
+      parameters: {},
+      mcpApp: { resource: { title: "Missing html" } },
+      run: async () => "ok",
+    } as any);
+    expect(action.mcpApp).toBeUndefined();
+  });
+
+  it("drops malformed publicAgent / link / mcpApp config that is wrong-typed", () => {
+    const action = defineAction({
+      description: "wrong-typed metadata",
+      parameters: {},
+      publicAgent: ["expose"] as any,
+      link: "not-a-function" as any,
+      mcpApp: { resource: [] } as any,
+      run: async () => "ok",
+    } as any);
+    expect(action.publicAgent).toBeUndefined();
+    expect(action.link).toBeUndefined();
+    expect(action.mcpApp).toBeUndefined();
+  });
+
+  it("threads through a valid link builder, publicAgent, and toolCallable=false", () => {
+    const link = ({ result }: { args: any; result: any }) => ({
+      url: `/_agent-native/open?id=${result.id}`,
+      label: "Open",
+    });
+    const action = defineAction({
+      description: "admin op",
+      parameters: { id: { type: "string" } },
+      toolCallable: false,
+      publicAgent: { expose: true, readOnly: false },
+      link,
+      run: async () => ({ id: "abc" }),
+    });
+    expect(action.toolCallable).toBe(false);
+    expect(action.publicAgent).toEqual({ expose: true, readOnly: false });
+    expect(action.link).toBe(link);
+    expect(action.link({ args: {}, result: { id: "abc" } })).toEqual({
+      url: "/_agent-native/open?id=abc",
+      label: "Open",
+    });
+  });
+
+  it("preserves a boolean needsApproval flag on the returned entry", () => {
+    const action = defineAction({
+      description: "send an email",
+      parameters: { to: { type: "string" } },
+      needsApproval: true,
+      run: async () => "sent",
+    });
+    expect(action.needsApproval).toBe(true);
+  });
+
+  it("preserves a predicate needsApproval gate on the returned entry", () => {
+    const gate = (args: { to: string }) => args.to.endsWith("@external.com");
+    const action = defineAction({
+      description: "send an email",
+      parameters: { to: { type: "string" } },
+      needsApproval: gate,
+      run: async () => "sent",
+    });
+    expect(action.needsApproval).toBe(gate);
+  });
+
+  it("preserves a per-call-only approval policy on the returned entry", () => {
+    const action = defineAction({
+      description: "send an email",
+      parameters: { to: { type: "string" } },
+      needsApproval: true,
+      allowPersistentApproval: false,
+      run: async () => "sent",
+    });
+
+    expect(action.allowPersistentApproval).toBe(false);
+  });
+
+  it("leaves needsApproval undefined when not specified (default off)", () => {
+    const action = defineAction({
+      description: "send an email",
+      parameters: { to: { type: "string" } },
+      run: async () => "sent",
+    });
+    expect(action.needsApproval).toBeUndefined();
+  });
+
+  it("drops a wrong-typed needsApproval value instead of threading it through", () => {
+    const action = defineAction({
+      description: "send an email",
+      parameters: { to: { type: "string" } },
+      needsApproval: "yes" as any,
+      run: async () => "sent",
+    } as any);
+    expect(action.needsApproval).toBeUndefined();
+  });
+
+  it("omits http from the entry when http is not specified", () => {
+    const action = defineAction({
+      description: "no http",
+      parameters: {},
+      run: async () => "ok",
+    });
+    expect("http" in action).toBe(false);
+  });
+
+  it("preserves http:false so the entry stays agent-only", () => {
+    const action = defineAction({
+      description: "agent-only",
+      parameters: {},
+      http: false,
+      run: async () => "ok",
+    });
+    expect(action.http).toBe(false);
+  });
+});
+
+describe("defineAction schema mode — tool parameter JSON Schema", () => {
+  it("converts a zod object into a JSON Schema with required vs optional fields", () => {
+    const action = defineAction({
+      description: "create form",
+      schema: z.object({
+        title: z.string().describe("Form title"),
+        status: z.enum(["draft", "published", "closed"]).default("draft"),
+        maxResponses: z.number().int().optional(),
+      }),
+      run: async () => "ok",
+    });
+
+    const params = action.tool.parameters;
+    expect(params.type).toBe("object");
+    expect(params.properties.title).toMatchObject({ type: "string" });
+    expect(params.required).toEqual(["title"]);
+    expect(params.properties.status.enum).toEqual([
+      "draft",
+      "published",
+      "closed",
+    ]);
+    expect(params.properties.title.description).toBe("Form title");
+  });
+
+  it("strips the $schema key so the Claude API (draft 2020-12) does not reject it", () => {
+    const action = defineAction({
+      description: "with schema key",
+      schema: z.object({ x: z.string() }),
+      run: async () => "ok",
+    });
+    expect("$schema" in (action.tool.parameters as any)).toBe(false);
+  });
+
+  it("strips propertyNames (from z.record) so OpenAI/Gemini function schemas are not rejected", () => {
+    const action = defineAction({
+      description: "with a record field",
+      schema: z.object({
+        styleBrief: z.record(z.string(), z.unknown()).optional(),
+      }),
+      run: async () => "ok",
+    });
+    const json = JSON.stringify(action.tool.parameters);
+    expect(json).not.toContain("propertyNames");
+  });
+
+  it("preserves a `propertyNames` data key inside a default value while stripping the schema keyword", () => {
+    const action = defineAction({
+      description: "record with a default object",
+      schema: z.object({
+        cfg: z.record(z.string(), z.string()).default({ propertyNames: "x" }),
+      }),
+      run: async () => "ok",
+    });
+    const params = action.tool.parameters as any;
+    expect("propertyNames" in params.properties.cfg).toBe(false);
+    expect(params.properties.cfg.default).toEqual({ propertyNames: "x" });
+  });
+
+  it("rewrites oneOf to anyOf so OpenAI does not reject the function schema", () => {
+    const action = defineAction({
+      description: "with a discriminated union",
+      schema: z.object({
+        operations: z.array(
+          z.discriminatedUnion("op", [
+            z.object({ op: z.literal("add"), panelId: z.string() }),
+            z.object({
+              op: z.literal("remove"),
+              panelIds: z.array(z.string()),
+            }),
+          ]),
+        ),
+      }),
+      run: async () => "ok",
+    });
+    const json = JSON.stringify(action.tool.parameters);
+    expect(json).not.toContain('"oneOf"');
+    expect(json).toContain('"anyOf"');
+  });
+
+  it("keeps every branch when rewriting a nested union", () => {
+    const action = defineAction({
+      description: "nested union",
+      schema: z.object({
+        outer: z.object({
+          inner: z.discriminatedUnion("kind", [
+            z.object({ kind: z.literal("a"), a: z.string() }),
+            z.object({ kind: z.literal("b"), b: z.string() }),
+            z.object({ kind: z.literal("c"), c: z.string() }),
+          ]),
+        }),
+      }),
+      run: async () => "ok",
+    });
+    const params = action.tool.parameters as any;
+    const inner = params.properties.outer.properties.inner;
+    expect(inner.oneOf).toBeUndefined();
+    expect(inner.anyOf).toHaveLength(3);
+  });
+
+  it("gives z.unknown() a typed value union so OpenAI accepts it", () => {
+    const action = defineAction({
+      description: "typeless field",
+      schema: z.object({ value: z.unknown() }),
+      run: async () => "ok",
+    });
+    const value = (action.tool.parameters as any).properties.value;
+    expect(Array.isArray(value.anyOf)).toBe(true);
+    expect(value.anyOf.map((b: any) => b.type)).toContain("string");
+    expect(value.anyOf.map((b: any) => b.type)).toContain("object");
+  });
+
+  it("types the value schema inside a record so nothing is left bare", () => {
+    const action = defineAction({
+      description: "record of unknown",
+      schema: z.object({ patch: z.record(z.string(), z.unknown()) }),
+      run: async () => "ok",
+    });
+    const patch = (action.tool.parameters as any).properties.patch;
+    expect(patch.type).toBe("object");
+    const extra = patch.additionalProperties;
+    if (extra && typeof extra === "object") {
+      expect(Array.isArray(extra.anyOf)).toBe(true);
+    }
+  });
+
+  it("leaves an enum-only schema alone", () => {
+    const action = defineAction({
+      description: "enum field",
+      schema: z.object({ mode: z.enum(["a", "b"]) }),
+      run: async () => "ok",
+    });
+    const mode = (action.tool.parameters as any).properties.mode;
+    expect(mode.enum).toEqual(["a", "b"]);
+    expect(mode.anyOf).toBeUndefined();
+  });
+
+  it("stores the original schema on the entry for downstream re-validation", () => {
+    const schema = z.object({ x: z.string() });
+    const action = defineAction({
+      description: "keeps schema",
+      schema,
+      run: async () => "ok",
+    });
+    expect(action.schema).toBe(schema);
+  });
+});
+
+describe("defineAction schema mode — agentInputSchema (advertised-only override)", () => {
+  it("advertises the compact schema instead of the full schema", () => {
+    const action = defineAction({
+      description: "create widget",
+      schema: z.object({
+        title: z.string(),
+        blocks: z.array(
+          z.discriminatedUnion("type", [
+            z.object({
+              type: z.literal("a"),
+              data: z.object({ a: z.string() }),
+            }),
+            z.object({
+              type: z.literal("b"),
+              data: z.object({ b: z.number() }),
+            }),
+          ]),
+        ),
+      }),
+      agentInputSchema: z.object({
+        title: z.string(),
+        blocks: z
+          .array(
+            z.object({
+              type: z
+                .enum(["a", "b"])
+                .describe(
+                  "Block type — call get-blocks for full field shapes.",
+                ),
+            }),
+          )
+          .describe("Call get-blocks before authoring blocks."),
+      }),
+      run: async () => "ok",
+    });
+
+    const params = action.tool.parameters as any;
+    expect(params.required).toEqual(["title", "blocks"]);
+    const blockItemProps = params.properties.blocks.items.properties;
+    expect(Object.keys(blockItemProps)).toEqual(["type"]);
+    expect(blockItemProps.type.enum).toEqual(["a", "b"]);
+  });
+
+  it("still runs full validation against `schema`, ignoring the compact override", async () => {
+    const run = vi.fn(async (args: any) => args);
+    const action = defineAction({
+      description: "create widget",
+      schema: z.object({
+        title: z.string(),
+        count: z.number().int().min(1),
+      }),
+      agentInputSchema: z.object({
+        title: z.string(),
+        // Compact override omits `count` entirely from what's advertised…
+      }),
+      run,
+    });
+
+    await expect(action.run({ title: "x" } as any)).rejects.toThrow(
+      /Missing required parameter.*count/s,
+    );
+    expect(run).not.toHaveBeenCalled();
+
+    await expect(action.run({ title: "x", count: 2 } as any)).resolves.toEqual({
+      title: "x",
+      count: 2,
+    });
+  });
+
+  it("falls back to the full schema when agentInputSchema is not set", () => {
+    const action = defineAction({
+      description: "create widget",
+      schema: z.object({ title: z.string(), count: z.number() }),
+      run: async () => "ok",
+    });
+    const params = action.tool.parameters as any;
+    expect(Object.keys(params.properties)).toEqual(["title", "count"]);
+  });
+});
+
+describe("defineAction schema mode — runtime validation wrapper", () => {
+  it("passes validated + coerced args to run() on success", async () => {
+    let received: unknown;
+    const action = defineAction({
+      description: "echo",
+      schema: z.object({
+        title: z.string(),
+        status: z.enum(["a", "b"]).default("a"),
+      }),
+      run: async (args: { title: string; status: string }) => {
+        received = args;
+        return "done";
+      },
+    });
+
+    const out = await action.run({ title: "Hi" });
+    expect(out).toBe("done");
+    expect(received).toEqual({ title: "Hi", status: "a" });
+  });
+
+  it("never invokes run() when validation fails", async () => {
+    let ran = false;
+    const action = defineAction({
+      description: "guarded",
+      schema: z.object({ title: z.string() }),
+      run: async () => {
+        ran = true;
+        return "should not happen";
+      },
+    });
+
+    await expect(action.run({})).rejects.toThrow(/Invalid action parameters/);
+    expect(ran).toBe(false);
+  });
+
+  it("formats missing required fields as a 'Missing required parameter' message", async () => {
+    const action = defineAction({
+      description: "needs two",
+      schema: z.object({ title: z.string(), body: z.string() }),
+      run: async () => "ok",
+    });
+
+    await expect(action.run({})).rejects.toThrow(
+      /Missing required parameters: title, body/,
+    );
+  });
+
+  it("echoes the received args and the expected signature so the agent can self-correct", async () => {
+    const action = defineAction({
+      description: "signature",
+      schema: z.object({
+        deckId: z.string(),
+        slideId: z.string().optional(),
+      }),
+      run: async () => "ok",
+    });
+
+    let message = "";
+    try {
+      await action.run({ slideId: "s1" });
+    } catch (err) {
+      message = (err as Error).message;
+    }
+    expect(message).toContain('Received: {"slideId":"s1"}');
+    expect(message).toContain("deckId*: string");
+    expect(message).toContain("slideId?: string");
+    expect(message).toContain("* = required, ? = optional");
+  });
+
+  it("reports non-missing validation errors (wrong type) distinctly", async () => {
+    const action = defineAction({
+      description: "typed",
+      schema: z.object({ count: z.number() }),
+      run: async () => "ok",
+    });
+
+    let message = "";
+    try {
+      await action.run({ count: "not-a-number" });
+    } catch (err) {
+      message = (err as Error).message;
+    }
+    expect(message).not.toMatch(/Missing required parameter/);
+    expect(message).toContain("count");
+  });
+
+  it("truncates an oversized received-args echo to keep tool results compact", async () => {
+    const action = defineAction({
+      description: "big",
+      schema: z.object({ required: z.string() }),
+      run: async () => "ok",
+    });
+
+    const huge = { extra: "x".repeat(2000) };
+    let message = "";
+    try {
+      await action.run(huge as any);
+    } catch (err) {
+      message = (err as Error).message;
+    }
+    expect(message).toContain("…");
+    expect(message.length).toBeLessThan(1000);
+  });
+
+  it("validateActionArgs lets a matching schema's run() skip re-validation when passed the same ctx", async () => {
+    let received: unknown;
+    const schema = z.object({ tag: z.preprocess((v) => `${v}!`, z.string()) });
+    const action = defineAction({
+      description: "tag",
+      schema,
+      run: async (args) => {
+        received = args;
+        return "ok";
+      },
+    });
+
+    const ctx = { caller: "http" as const };
+    const validated = await validateActionArgs(
+      schema,
+      { tag: "a" },
+      undefined,
+      ctx,
+    );
+    await action.run(validated, ctx);
+    expect(received).toEqual({ tag: "a!" });
+  });
+
+  it("re-validates normally when run() is called without the marking ctx", async () => {
+    let received: unknown;
+    const schema = z.object({ tag: z.preprocess((v) => `${v}!`, z.string()) });
+    const action = defineAction({
+      description: "tag",
+      schema,
+      run: async (args) => {
+        received = args;
+        return "ok";
+      },
+    });
+
+    const validated = await validateActionArgs(schema, { tag: "a" });
+    await action.run(validated);
+    expect(received).toEqual({ tag: "a!!" });
+  });
+
+  it("does not let a value validated for one action's schema skip a different action's validation", async () => {
+    const schemaA = z.object({ tag: z.string() });
+    const schemaB = z.object({ name: z.string() });
+    let ranB = false;
+    const actionB = defineAction({
+      description: "needs name",
+      schema: schemaB,
+      run: async () => {
+        ranB = true;
+        return "ok";
+      },
+    });
+
+    const validatedForA = await validateActionArgs(schemaA, { tag: "x" });
+    await expect(actionB.run(validatedForA)).rejects.toThrow(
+      /Invalid action parameters/,
+    );
+    expect(ranB).toBe(false);
+  });
+
+  it("skips re-validation for a schema that validates down to a primitive", async () => {
+    let received: unknown;
+    const schema = z.preprocess((v) => `${v}!`, z.string());
+    const action = defineAction({
+      description: "primitive schema",
+      schema,
+      run: async (args) => {
+        received = args;
+        return "ok";
+      },
+    });
+
+    const ctx = { caller: "http" as const };
+    const validated = await validateActionArgs(schema, "a", undefined, ctx);
+    expect(validated).toBe("a!");
+    await action.run(validated, ctx);
+    expect(received).toBe("a!");
+  });
+
+  it("recognizes a cached NaN result via Object.is instead of ===", async () => {
+    let transformCalls = 0;
+    const schema = z.preprocess(() => {
+      transformCalls += 1;
+      return NaN;
+    }, z.any());
+    const action = defineAction({
+      description: "nan schema",
+      schema,
+      run: async () => "ok",
+    });
+
+    const ctx = { caller: "http" as const };
+    const validated = await validateActionArgs(schema, {}, undefined, ctx);
+    expect(Number.isNaN(validated)).toBe(true);
+    expect(transformCalls).toBe(1);
+    await action.run(validated, ctx);
+    expect(transformCalls).toBe(1);
+  });
+});
+
+describe("defineAction — outputSchema (return-value validation)", () => {
+  it("passes the result through untouched when no outputSchema is provided", async () => {
+    const original = { id: "abc", extra: 123 };
+    const action = defineAction({
+      description: "no output schema",
+      schema: z.object({ x: z.string() }),
+      run: async () => original,
+    });
+    const out = await action.run({ x: "hi" });
+    expect(out).toBe(original);
+    expect("outputSchema" in action).toBe(false);
+    expect(action.outputErrorStrategy).toBeUndefined();
+  });
+
+  it("returns the validated result when it matches the outputSchema", async () => {
+    const action = defineAction({
+      description: "valid output",
+      schema: z.object({ x: z.string() }),
+      outputSchema: z.object({ id: z.string(), count: z.number() }),
+      run: async () => ({ id: "abc", count: 2 }),
+    });
+    const out = await action.run({ x: "hi" });
+    expect(out).toEqual({ id: "abc", count: 2 });
+    expect(action.outputErrorStrategy).toBe("warn");
+    expect(action.outputSchema).toBeDefined();
+  });
+
+  it('warns and returns the ORIGINAL result on mismatch under the default "warn" strategy', async () => {
+    const bad = { id: "abc", count: "not-a-number" };
+    const warnings: unknown[][] = [];
+    const original = console.warn;
+    console.warn = (...inputArgs: unknown[]) => {
+      warnings.push(inputArgs);
+    };
+    try {
+      const action = defineAction({
+        description: "warn output",
+        schema: z.object({ x: z.string() }),
+        outputSchema: z.object({ id: z.string(), count: z.number() }),
+        run: async () => bad,
+      });
+      const out = await action.run({ x: "hi" });
+      expect(out).toBe(bad);
+    } finally {
+      console.warn = original;
+    }
+    expect(warnings.length).toBe(1);
+    expect(String(warnings[0][0])).toMatch(/did not match outputSchema/);
+    expect(String(warnings[0][0])).toContain("count");
+  });
+
+  it('throws a clear error on mismatch under the "strict" strategy', async () => {
+    const action = defineAction({
+      description: "strict output",
+      schema: z.object({ x: z.string() }),
+      outputSchema: z.object({ id: z.string() }),
+      outputErrorStrategy: "strict",
+      run: async () => ({ wrong: true }),
+    });
+    await expect(action.run({ x: "hi" })).rejects.toThrow(
+      /did not match outputSchema/,
+    );
+    expect(action.outputErrorStrategy).toBe("strict");
+  });
+
+  it('returns the configured fallback on mismatch under the "fallback" strategy', async () => {
+    const fallback = { id: "fallback", count: 0 };
+    const action = defineAction({
+      description: "fallback output",
+      schema: z.object({ x: z.string() }),
+      outputSchema: z.object({ id: z.string(), count: z.number() }),
+      outputErrorStrategy: "fallback",
+      outputFallback: fallback,
+      run: async () => ({ id: "abc", count: "nope" }),
+    });
+    const out = await action.run({ x: "hi" });
+    expect(out).toBe(fallback);
+    expect(action.outputErrorStrategy).toBe("fallback");
+    expect(action.outputFallback).toBe(fallback);
+  });
+
+  it("validates INPUT before run() and OUTPUT after — both compose", async () => {
+    let ran = false;
+    const action = defineAction({
+      description: "compose input + output validation",
+      schema: z.object({ title: z.string() }),
+      outputSchema: z.object({ ok: z.boolean() }),
+      outputErrorStrategy: "strict",
+      run: async (args: { title: string }) => {
+        ran = true;
+        return { ok: args.title.length > 0 };
+      },
+    });
+
+    await expect(action.run({} as any)).rejects.toThrow(
+      /Invalid action parameters/,
+    );
+    expect(ran).toBe(false);
+
+    const out = await action.run({ title: "Hi" });
+    expect(ran).toBe(true);
+    expect(out).toEqual({ ok: true });
+  });
+
+  it("works in legacy parameters mode (no input schema, output validated)", async () => {
+    const action = defineAction({
+      description: "legacy params with output schema",
+      parameters: { id: { type: "string" } },
+      outputSchema: z.object({ count: z.number() }),
+      outputErrorStrategy: "strict",
+      run: async () => ({ count: 5 }),
+    });
+    const out = await action.run({ id: "x" });
+    expect(out).toEqual({ count: 5 });
+  });
+});
+
+describe("defineAction — authorize", () => {
+  it("runs the gate before the body and passes args + ctx through", async () => {
+    const authorize = vi.fn();
+    const run = vi.fn(async () => ({ ok: true }));
+    const action = defineAction({
+      description: "guarded",
+      schema: z.object({ id: z.string() }),
+      authorize,
+      run,
+    });
+
+    await action.run({ id: "a1" }, { caller: "http", userEmail: "a@b.c" });
+
+    expect(authorize).toHaveBeenCalledWith(
+      { id: "a1" },
+      expect.objectContaining({ caller: "http", userEmail: "a@b.c" }),
+    );
+    expect(run).toHaveBeenCalledTimes(1);
+  });
+
+  it("denies with 403 when the gate returns false, without running the body", async () => {
+    const run = vi.fn(async () => ({ ok: true }));
+    const action = defineAction({
+      description: "guarded",
+      schema: z.object({ id: z.string() }),
+      authorize: () => false,
+      run,
+    });
+
+    await expect(action.run({ id: "a1" }, { caller: "tool" })).rejects.toThrow(
+      /Not authorized/,
+    );
+    expect(run).not.toHaveBeenCalled();
+  });
+
+  it("propagates the gate's own error so a specific denial keeps its message", async () => {
+    const run = vi.fn(async () => ({ ok: true }));
+    const denial = Object.assign(new Error("Requires coach role coach-admin"), {
+      statusCode: 403,
+    });
+    const action = defineAction({
+      description: "guarded",
+      schema: z.object({ id: z.string() }),
+      authorize: () => {
+        throw denial;
+      },
+      run,
+    });
+
+    await expect(action.run({ id: "a1" }, { caller: "mcp" })).rejects.toBe(
+      denial,
+    );
+    expect(run).not.toHaveBeenCalled();
+  });
+
+  it("allows when the gate returns nothing — the permissive default is explicit", async () => {
+    const action = defineAction({
+      description: "guarded",
+      schema: z.object({ id: z.string() }),
+      authorize: () => undefined,
+      run: async () => ({ ok: true }),
+    });
+    expect(await action.run({ id: "a1" }, { caller: "cli" })).toEqual({
+      ok: true,
+    });
+  });
+
+  it("gates input-invalid calls too — validation still runs first", async () => {
+    const authorize = vi.fn();
+    const action = defineAction({
+      description: "guarded",
+      schema: z.object({ id: z.string() }),
+      authorize,
+      run: async () => ({ ok: true }),
+    });
+
+    await expect(
+      action.run({ id: 42 } as never, { caller: "http" }),
+    ).rejects.toThrow(/Invalid action parameters/);
+    expect(authorize).not.toHaveBeenCalled();
+  });
+});
+
+describe("AgentActionStopError", () => {
+  it("carries the stop marker, safe details, errorCode, and toolResult", () => {
+    const err = new AgentActionStopError("nothing more to do", {
+      errorCode: "DONE",
+      details: { reason: "complete" },
+      toolResult: "Stopped.",
+    });
+    expect(err).toBeInstanceOf(Error);
+    expect(err.name).toBe("AgentActionStopError");
+    expect(err.agentNativeStop).toBe(true);
+    expect(err.errorCode).toBe("DONE");
+    expect(err.details).toEqual({ reason: "complete" });
+    expect(err.toolResult).toBe("Stopped.");
+  });
+
+  it("isAgentActionStopError recognizes real instances and duck-typed objects", () => {
+    expect(isAgentActionStopError(new AgentActionStopError("x"))).toBe(true);
+    expect(isAgentActionStopError({ agentNativeStop: true })).toBe(true);
+  });
+
+  it("isAgentActionStopError rejects ordinary errors and non-objects", () => {
+    expect(isAgentActionStopError(new Error("boom"))).toBe(false);
+    expect(isAgentActionStopError({ agentNativeStop: false })).toBe(false);
+    expect(isAgentActionStopError(null)).toBe(false);
+    expect(isAgentActionStopError("agentNativeStop")).toBe(false);
+  });
+});
+
+describe("AgentConnectionRequiredError", () => {
+  it("carries only a trusted provider reference and resumable reason", () => {
+    const error = new AgentConnectionRequiredError("Slack must be connected.", {
+      provider: "slack",
+      reason: "grant",
+      appId: "dispatch",
+    });
+
+    expect(isAgentConnectionRequiredError(error)).toBe(true);
+    expect(error).toMatchObject({
+      agentNativeStop: true,
+      agentConnectionRequired: true,
+      errorCode: "connection_required",
+      provider: "slack",
+      reason: "grant",
+      appId: "dispatch",
+    });
+    expect(error).not.toHaveProperty("url");
+    expect(error).not.toHaveProperty("scopes");
+  });
+});
+
+describe("gateway-stringified tool-arg coercion", () => {
+  function makeAction() {
+    let received: any = null;
+    const action = defineAction({
+      description: "dashboard-like action",
+      schema: z.object({
+        dashboardId: z.string(),
+        forceNew: z.boolean().optional(),
+        limit: z.number().optional(),
+        ops: z
+          .array(z.object({ op: z.string(), value: z.unknown().optional() }))
+          .optional(),
+      }),
+      http: false,
+      run: async (args: any) => {
+        received = args;
+        return "ok";
+      },
+    });
+    return { action, get: () => received };
+  }
+
+  it("coerces a stringified array, boolean, and number to native types", async () => {
+    const { action, get } = makeAction();
+    await action.run({
+      dashboardId: "d1",
+      forceNew: "true",
+      limit: "20",
+      ops: '[{"op":"insert","value":{"id":"p1"}}]',
+    } as any);
+    expect(get()).toEqual({
+      dashboardId: "d1",
+      forceNew: true,
+      limit: 20,
+      ops: [{ op: "insert", value: { id: "p1" } }],
+    });
+  });
+
+  it("leaves genuine string fields untouched even when they look like JSON", async () => {
+    const { action, get } = makeAction();
+    await action.run({ dashboardId: "[1,2,3]" } as any);
+    expect(get().dashboardId).toBe("[1,2,3]");
+  });
+
+  it("does not swallow a truly invalid stringified array — validation still errors", async () => {
+    const { action } = makeAction();
+    await expect(
+      action.run({ dashboardId: "d1", ops: "[not json" } as any),
+    ).rejects.toThrow(/Invalid action parameters/);
+  });
+
+  it("passes native (already-typed) args through unchanged", async () => {
+    const { action, get } = makeAction();
+    await action.run({
+      dashboardId: "d1",
+      forceNew: false,
+      ops: [{ op: "remove" }],
+    } as any);
+    expect(get()).toEqual({
+      dashboardId: "d1",
+      forceNew: false,
+      ops: [{ op: "remove" }],
+    });
+  });
+});

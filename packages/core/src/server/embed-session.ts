@@ -1,0 +1,1318 @@
+import crypto from "node:crypto";
+
+import type { H3Event } from "h3";
+import {
+  getCookie,
+  getHeader,
+  getQuery,
+  setCookie,
+  setResponseHeader,
+} from "h3";
+
+import { getDbExec, type DbExec } from "../db/client.js";
+import { ensureTableExists } from "../db/ddl-guard.js";
+import {
+  EMBED_MODE_QUERY_PARAM,
+  EMBED_SESSION_COOKIE,
+  EMBED_TARGET_HEADER,
+  EMBED_TARGET_QUERY_PARAM,
+  EMBED_TOKEN_QUERY_PARAM,
+} from "../shared/embed-auth.js";
+import { normalizeAppPath } from "../shared/sign-in-journey.js";
+import { getConfiguredAppBasePath } from "./app-base-path.js";
+import { resolveAuthCookieNamespace } from "./cookie-namespace.js";
+import { getWorkspaceA2ADerivedSecret } from "./derived-secret.js";
+import { isHttpsRequest } from "./https-request.js";
+import { getRequestContext } from "./request-context.js";
+import { getForwardedRequestHostname } from "./request-origin.js";
+
+const TOKEN_KIND = "agent-native-embed-session";
+const DEFAULT_TOKEN_TTL_SECONDS = 60 * 60;
+const DEFAULT_TICKET_TTL_SECONDS = 5 * 60;
+const EMBED_CAPABILITY_SCOPE_PREFIX = "capability:";
+const CONTROL_CHARS = new RegExp("[\\u0000-\\u001f\\u007f]");
+const OPEN_ROUTE_PATH = "/_agent-native/open";
+const OPEN_ROUTE_VIEW_PATHS: Record<string, string> = {
+  ask: "/",
+  calendar: "/",
+  capture: "/search",
+  knowledge: "/knowledge",
+  list: "/",
+  ops: "/ops",
+  proposals: "/review",
+  review: "/review",
+  search: "/search",
+  source: "/sources",
+  sources: "/sources",
+  settings: "/settings",
+};
+const EMBED_ROUTE_ALIASES: Record<string, string[]> = {
+  "/": ["/overview"],
+  "/dashboard": [
+    "/dashboards/agent-native-templates-first-party",
+    "/adhoc/agent-native-templates-first-party",
+  ],
+  "/dashboards": [
+    "/dashboards/agent-native-templates-first-party",
+    "/adhoc/agent-native-templates-first-party",
+  ],
+  "/traffic": [
+    "/dashboards/agent-native-templates-first-party",
+    "/adhoc/agent-native-templates-first-party",
+  ],
+  "/traffic-dashboard": [
+    "/dashboards/agent-native-templates-first-party",
+    "/adhoc/agent-native-templates-first-party",
+  ],
+};
+
+let _initPromise: Promise<void> | undefined;
+let _devSigningKey: string | undefined;
+
+export interface EmbedSessionTicketInput {
+  ownerEmail: string;
+  orgId?: string | null;
+  targetPath: string;
+  scope?: string | null;
+  ttlSeconds?: number;
+}
+
+export interface EmbedSessionTicket {
+  ticket: string;
+  ticketHash: string;
+  expiresAt: number;
+}
+
+export type EmbedSessionTicketConsumeOutcome =
+  | "missing-ticket"
+  | "not-found"
+  | "already-consumed"
+  | "expired"
+  | "identity-mismatch"
+  | "org-mismatch"
+  | "consumption-race"
+  | "invalid-row"
+  | "revoked"
+  | "consumed";
+
+export interface EmbedSessionTicketConsumeDiagnostic {
+  outcome: EmbedSessionTicketConsumeOutcome;
+  ticketKey: string | null;
+  ticketRowFound: boolean;
+  consumed: boolean;
+  expired: boolean;
+  expectedOwnerKey: string | null;
+  ticketOwnerKey: string | null;
+  expectedOrgKey: string | null;
+  ticketOrgKey: string | null;
+}
+
+export interface ConsumeEmbedSessionTicketOptions {
+  expectedOwnerEmail?: string | null;
+  expectedOrgId?: string | null;
+  allowCapabilityIdentityMismatch?: boolean;
+  onResult?: (result: EmbedSessionTicketConsumeDiagnostic) => void;
+}
+
+export interface ConsumedEmbedSessionTicket {
+  ownerEmail: string;
+  orgId?: string;
+  targetPath: string;
+  scope?: string;
+  expiresAt: number;
+  ticketCreatedAtMs: number;
+}
+
+export interface EmbedSessionTokenClaims {
+  kind: typeof TOKEN_KIND;
+  ownerEmail: string;
+  orgId?: string;
+  targetPath: string;
+  audienceHost?: string;
+  scope?: string;
+  iat: number;
+  issuedAtMs?: number;
+  ticketCreatedAtMs?: number;
+  exp: number;
+}
+
+export type VerifyEmbedSessionTokenResult =
+  | { ok: true; claims: EmbedSessionTokenClaims }
+  | { ok: false; reason: string };
+
+export type ResolvedEmbedSession = {
+  email: string;
+  orgId?: string;
+  token: string;
+  targetPath: string;
+  scope?: string;
+};
+
+export function isEmbedCapabilityScope(
+  scope: string | undefined | null,
+): boolean {
+  return (
+    typeof scope === "string" && scope.startsWith(EMBED_CAPABILITY_SCOPE_PREFIX)
+  );
+}
+
+export function resolvedEmbedCapabilityScope(
+  session: ResolvedEmbedSession | null,
+): string | undefined {
+  const scope = session?.scope;
+  if (
+    !isEmbedCapabilityScope(scope) ||
+    !scope ||
+    scope.length > 512 ||
+    CONTROL_CHARS.test(scope)
+  ) {
+    return undefined;
+  }
+  return scope;
+}
+
+export async function ensureTable(): Promise<void> {
+  if (!_initPromise) {
+    _initPromise = (async () => {
+      const embedTicketsCreateSql = `
+        CREATE TABLE IF NOT EXISTS agent_native_embed_tickets (
+          ticket_hash TEXT PRIMARY KEY,
+          owner_email TEXT NOT NULL,
+          org_id TEXT,
+          target_path TEXT NOT NULL,
+          scope TEXT,
+          created_at BIGINT NOT NULL,
+          expires_at BIGINT NOT NULL,
+          consumed_at BIGINT
+        )
+      `;
+      await ensureTableExists(
+        "agent_native_embed_tickets",
+        embedTicketsCreateSql,
+      );
+      await ensureTableExists(
+        "agent_native_embed_session_revocations",
+        `CREATE TABLE IF NOT EXISTS agent_native_embed_session_revocations (
+          owner_hash TEXT PRIMARY KEY,
+          revoked_before BIGINT NOT NULL
+        )`,
+      );
+    })().catch((err) => {
+      _initPromise = undefined;
+      throw err;
+    });
+  }
+  return _initPromise;
+}
+
+function getSigningKey(): string {
+  const secret =
+    process.env.OAUTH_STATE_SECRET ||
+    process.env.BETTER_AUTH_SECRET ||
+    getWorkspaceA2ADerivedSecret("short-lived-token");
+  if (secret) return secret;
+
+  if (process.env.NODE_ENV === "production") {
+    throw new Error(
+      "Embed session signing requires a server secret. Set OAUTH_STATE_SECRET, BETTER_AUTH_SECRET, or A2A_SECRET in production workspace deploys.",
+    );
+  }
+
+  if (!_devSigningKey) {
+    _devSigningKey = crypto.randomBytes(32).toString("hex");
+  }
+  return _devSigningKey;
+}
+
+function base64UrlEncode(buf: Buffer | string): string {
+  const b = typeof buf === "string" ? Buffer.from(buf, "utf8") : buf;
+  return b
+    .toString("base64")
+    .replace(/\+/g, "-")
+    .replace(/\//g, "_")
+    .replace(/=+$/g, "");
+}
+
+function base64UrlDecode(input: string): Buffer {
+  const padded = input + "=".repeat((4 - (input.length % 4)) % 4);
+  return Buffer.from(padded.replace(/-/g, "+").replace(/_/g, "/"), "base64");
+}
+
+function signPayload(payload: string): string {
+  return base64UrlEncode(
+    crypto.createHmac("sha256", getSigningKey()).update(payload).digest(),
+  );
+}
+
+function hashTicket(ticket: string): string {
+  return crypto.createHash("sha256").update(ticket).digest("hex");
+}
+
+function redactedIdentifier(value: string | null | undefined): string | null {
+  if (!value) return null;
+  return crypto.createHash("sha256").update(value).digest("hex").slice(0, 12);
+}
+
+function normalizedEmail(value: string | null | undefined): string | null {
+  const normalized = value?.trim().toLowerCase();
+  return normalized || null;
+}
+
+function ownerHash(ownerEmail: string): string | null {
+  const normalizedOwnerEmail = normalizedEmail(ownerEmail);
+  return normalizedOwnerEmail
+    ? crypto.createHash("sha256").update(normalizedOwnerEmail).digest("hex")
+    : null;
+}
+
+async function embedSessionsRevokedBefore(
+  ownerEmail: string,
+  client = getDbExec(),
+): Promise<number | null> {
+  const key = ownerHash(ownerEmail);
+  if (!key) return null;
+  await ensureTable();
+  const { rows } = await client.execute({
+    sql: `SELECT revoked_before FROM agent_native_embed_session_revocations WHERE owner_hash = ?`,
+    args: [key],
+  });
+  return numberOrNull(rows[0]?.revoked_before ?? rows[0]?.revokedBefore);
+}
+
+async function lockEmbedSessionsForOwner(
+  client: DbExec,
+  key: string,
+): Promise<void> {
+  await client.execute({
+    sql: "SELECT pg_advisory_xact_lock(hashtextextended(?, 0::bigint))",
+    args: [`agent-native:embed-session-revocation:${key}`],
+  });
+}
+
+async function sourceSessionBelongsToOwner(
+  tx: DbExec,
+  ownerEmail: string,
+  token: string,
+): Promise<boolean> {
+  const { rows } = await tx.execute({
+    sql: `SELECT to_regclass('sessions') AS legacy_sessions, to_regclass('"session"') AS better_auth_sessions, to_regclass('"user"') AS better_auth_users`,
+    args: [],
+  });
+  const tables = rows[0] as
+    | {
+        legacy_sessions?: unknown;
+        better_auth_sessions?: unknown;
+        better_auth_users?: unknown;
+        0?: unknown;
+        1?: unknown;
+        2?: unknown;
+      }
+    | undefined;
+  if (!tables) throw new Error("Could not inspect auth session tables.");
+
+  if (tables.legacy_sessions ?? tables[0]) {
+    const legacy = await tx.execute({
+      sql: "SELECT email FROM sessions WHERE token = ? LIMIT 1",
+      args: [token],
+    });
+    if (
+      normalizedEmail(legacy.rows[0]?.email ?? legacy.rows[0]?.[0]) ===
+      normalizedEmail(ownerEmail)
+    ) {
+      return true;
+    }
+  }
+
+  if (
+    (tables.better_auth_sessions ?? tables[1]) &&
+    (tables.better_auth_users ?? tables[2])
+  ) {
+    const betterAuth = await tx.execute({
+      sql: 'SELECT u.email FROM "session" s JOIN "user" u ON u.id = s.user_id WHERE s.token = ? LIMIT 1',
+      args: [token],
+    });
+    return (
+      normalizedEmail(betterAuth.rows[0]?.email ?? betterAuth.rows[0]?.[0]) ===
+      normalizedEmail(ownerEmail)
+    );
+  }
+
+  return false;
+}
+
+export async function revokeEmbedSessionsForOwner(
+  ownerEmail: string,
+): Promise<void> {
+  return revokeEmbedSessionsForOwners([ownerEmail]);
+}
+
+export async function revokeEmbedSessionsForOwners(
+  ownerEmails: string[],
+  inTransaction?: (tx: DbExec) => Promise<void>,
+): Promise<void> {
+  const owners = new Map<string, string>();
+  for (const email of ownerEmails) {
+    const normalized = normalizedEmail(email);
+    const key = normalized ? ownerHash(normalized) : null;
+    if (key && normalized) owners.set(key, normalized);
+  }
+  const entries = [...owners].sort(([left], [right]) =>
+    left.localeCompare(right),
+  );
+  if (entries.length > 0) await ensureTable();
+  const client = getDbExec();
+  if (!client.transaction) {
+    throw new Error("Embed session revocation requires database transactions.");
+  }
+  await client.transaction(async (tx) => {
+    for (const [key] of entries) await lockEmbedSessionsForOwner(tx, key);
+    const revokedBefore = Date.now();
+    for (const [key] of entries) {
+      await tx.execute({
+        sql:
+          `INSERT INTO agent_native_embed_session_revocations (owner_hash, revoked_before) VALUES (?, ?) ` +
+          `ON CONFLICT (owner_hash) DO UPDATE SET revoked_before = GREATEST(agent_native_embed_session_revocations.revoked_before, EXCLUDED.revoked_before)`,
+        args: [key, revokedBefore],
+      });
+    }
+    await inTransaction?.(tx);
+  });
+}
+
+async function embedSessionIsRevoked(
+  ownerEmail: string,
+  createdAtMs: number,
+): Promise<boolean> {
+  const revokedBefore = await embedSessionsRevokedBefore(ownerEmail);
+  return revokedBefore !== null && createdAtMs <= revokedBefore;
+}
+
+function numberOrNull(value: unknown): number | null {
+  if (value == null) return null;
+  const n = Number(value);
+  return Number.isFinite(n) ? n : null;
+}
+
+function stringOrUndefined(value: unknown): string | undefined {
+  return typeof value === "string" && value ? value : undefined;
+}
+
+function stripConfiguredBasePath(pathname: string): string {
+  const base = getConfiguredAppBasePath();
+  if (!base) return pathname;
+  if (pathname === base) return "/";
+  if (pathname.startsWith(`${base}/`))
+    return pathname.slice(base.length) || "/";
+  return pathname;
+}
+
+function pathnameFromPath(path: string): string | null {
+  const normalized = normalizeEmbedTargetPath(path);
+  if (!normalized) return null;
+  try {
+    return new URL(normalized, "http://agent-native.invalid").pathname;
+  } catch {
+    return null;
+  }
+}
+
+function safePathSegment(value: string | null | undefined): string | null {
+  const segment = value?.trim();
+  if (!segment || CONTROL_CHARS.test(segment)) return null;
+  if (segment === "." || segment === "..") return null;
+  if (
+    segment.includes("/") ||
+    segment.includes("\\") ||
+    segment.includes("?")
+  ) {
+    return null;
+  }
+  if (segment.includes("#")) return null;
+  return segment;
+}
+
+function addResolvedOpenRoutePath(
+  targets: Set<string>,
+  path: string | null | undefined,
+): void {
+  if (!path) return;
+  const pathname = pathnameFromPath(path);
+  if (pathname) targets.add(pathname);
+}
+
+function openRouteTargetPathnames(targetPath: string): Set<string> {
+  const targets = new Set<string>();
+  let url: URL;
+  try {
+    url = new URL(targetPath, "http://agent-native.invalid");
+  } catch {
+    return targets;
+  }
+  if (stripConfiguredBasePath(url.pathname) !== OPEN_ROUTE_PATH) {
+    return targets;
+  }
+
+  const to = normalizeEmbedTargetPath(url.searchParams.get("to"));
+  addResolvedOpenRoutePath(targets, to);
+
+  const view = url.searchParams.get("view")?.trim();
+  if (!view || CONTROL_CHARS.test(view)) return targets;
+  const viewPath = view.startsWith("/") ? view : `/${view}`;
+  const viewPathname = pathnameFromPath(viewPath);
+  addResolvedOpenRoutePath(targets, viewPathname);
+  addResolvedOpenRoutePath(targets, OPEN_ROUTE_VIEW_PATHS[view]);
+
+  const dashboardId = safePathSegment(url.searchParams.get("dashboardId"));
+  if (view === "adhoc" && dashboardId) {
+    addResolvedOpenRoutePath(
+      targets,
+      `/adhoc/${encodeURIComponent(dashboardId)}`,
+    );
+    addResolvedOpenRoutePath(
+      targets,
+      `/dashboards/${encodeURIComponent(dashboardId)}`,
+    );
+  }
+  const analysisId = safePathSegment(url.searchParams.get("analysisId"));
+  if (view === "analyses" && analysisId) {
+    addResolvedOpenRoutePath(
+      targets,
+      `/analyses/${encodeURIComponent(analysisId)}`,
+    );
+  }
+  const extensionId = safePathSegment(url.searchParams.get("extensionId"));
+  if (view === "extensions" && extensionId) {
+    addResolvedOpenRoutePath(
+      targets,
+      `/extensions/${encodeURIComponent(extensionId)}`,
+    );
+  }
+  const designId = safePathSegment(url.searchParams.get("designId"));
+  if (designId) {
+    addResolvedOpenRoutePath(
+      targets,
+      view === "present"
+        ? `/present/${encodeURIComponent(designId)}`
+        : `/design/${encodeURIComponent(designId)}`,
+    );
+  }
+  const documentId = safePathSegment(url.searchParams.get("documentId"));
+  if (documentId) {
+    addResolvedOpenRoutePath(
+      targets,
+      `/page/${encodeURIComponent(documentId)}`,
+    );
+  }
+  const deckId = safePathSegment(url.searchParams.get("deckId"));
+  if (deckId) {
+    addResolvedOpenRoutePath(
+      targets,
+      view === "present"
+        ? `/deck/${encodeURIComponent(deckId)}/present`
+        : `/deck/${encodeURIComponent(deckId)}`,
+    );
+  }
+  if (
+    safePathSegment(url.searchParams.get("captureId")) ||
+    safePathSegment(url.searchParams.get("knowledgeId")) ||
+    safePathSegment(url.searchParams.get("sourceId"))
+  ) {
+    addResolvedOpenRoutePath(targets, OPEN_ROUTE_VIEW_PATHS[view]);
+  }
+  if (
+    view === "calendar" &&
+    (safePathSegment(url.searchParams.get("eventId")) ||
+      safePathSegment(url.searchParams.get("eventDraftId")))
+  ) {
+    addResolvedOpenRoutePath(targets, "/");
+  }
+  const threadId = safePathSegment(url.searchParams.get("threadId"));
+  if (viewPathname && threadId) {
+    addResolvedOpenRoutePath(
+      targets,
+      `${viewPathname}/${encodeURIComponent(threadId)}`,
+    );
+  }
+
+  return targets;
+}
+
+function allowedEmbedTargetPathnames(targetPath: string): Set<string> {
+  const allowed = new Set<string>();
+  const direct = pathnameFromPath(targetPath);
+  if (direct) {
+    allowed.add(direct);
+    for (const aliasTarget of EMBED_ROUTE_ALIASES[direct] ?? []) {
+      allowed.add(aliasTarget);
+    }
+  }
+  for (const openTarget of openRouteTargetPathnames(targetPath)) {
+    allowed.add(openTarget);
+  }
+  return allowed;
+}
+
+function requestUrlFromEvent(event: H3Event): string {
+  const mountedPathname = (event as any).context?._mountedPathname;
+  if (typeof mountedPathname === "string" && mountedPathname) {
+    return `${mountedPathname}${(event as any).url?.search ?? ""}`;
+  }
+  return (
+    (event as any).node?.req?.url ??
+    ((event as any).req?.url as string | undefined) ??
+    ((event as any).request?.url as string | undefined) ??
+    (event as any).path ??
+    (event as any).url?.toString?.() ??
+    "/"
+  );
+}
+
+function requestPathname(event: H3Event): string | null {
+  const raw = requestUrlFromEvent(event);
+  try {
+    const pathname = new URL(raw, "http://agent-native.invalid").pathname;
+    return stripConfiguredBasePath(pathname);
+  } catch {
+    return null;
+  }
+}
+
+function headerTargetPathname(event: H3Event): string | null {
+  const direct =
+    (event as any).request?.headers?.get?.(EMBED_TARGET_HEADER) ??
+    (event as any).headers?.get?.(EMBED_TARGET_HEADER) ??
+    (event as any).node?.req?.headers?.[EMBED_TARGET_HEADER] ??
+    (event as any).node?.req?.headers?.[EMBED_TARGET_HEADER.toLowerCase()];
+  if (typeof direct === "string") return pathnameFromPath(direct);
+  try {
+    const raw = getHeader(event, EMBED_TARGET_HEADER);
+    if (typeof raw === "string") return pathnameFromPath(raw);
+    const queryValue = getQuery(event)?.[EMBED_TARGET_QUERY_PARAM];
+    const queryTarget = Array.isArray(queryValue) ? queryValue[0] : queryValue;
+    return typeof queryTarget === "string"
+      ? pathnameFromPath(queryTarget)
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+function requestHostname(event: H3Event): string | null {
+  try {
+    return getForwardedRequestHostname(event);
+  } catch {
+    return null;
+  }
+}
+
+function normalizedHostname(
+  hostname: string | null | undefined,
+): string | null {
+  const normalized = hostname?.trim().toLowerCase().replace(/\.$/, "");
+  return normalized || null;
+}
+
+function isFirstPartyAppHostname(hostname: string | null): boolean {
+  return Boolean(
+    !hostname ||
+    (hostname.endsWith(".agent-native.com") &&
+      hostname !== "www.agent-native.com"),
+  );
+}
+
+function isFirstPartyAppRequest(event: H3Event): boolean {
+  return isFirstPartyAppHostname(normalizedHostname(requestHostname(event)));
+}
+
+function embedTokenMatchesHostname(
+  hostname: string | null | undefined,
+  claims: EmbedSessionTokenClaims,
+): boolean {
+  const requestHostname = normalizedHostname(hostname);
+  return claims.audienceHost === undefined
+    ? !isFirstPartyAppHostname(requestHostname)
+    : normalizedHostname(claims.audienceHost) === requestHostname;
+}
+
+function embedTokenMatchesRequestAudience(
+  event: H3Event,
+  claims: EmbedSessionTokenClaims,
+): boolean {
+  return embedTokenMatchesHostname(requestHostname(event), claims);
+}
+
+function referrerTargetPathname(event: H3Event): string | null {
+  let raw: string | null =
+    (event as any).request?.headers?.get?.("referer") ??
+    (event as any).request?.headers?.get?.("referrer") ??
+    (event as any).headers?.get?.("referer") ??
+    (event as any).headers?.get?.("referrer") ??
+    (event as any).node?.req?.headers?.referer ??
+    (event as any).node?.req?.headers?.referrer ??
+    null;
+  try {
+    raw =
+      raw ??
+      getHeader(event, "referer") ??
+      getHeader(event, "referrer") ??
+      null;
+  } catch {
+    raw = raw ?? null;
+  }
+  if (!raw) return null;
+  const hostname = requestHostname(event);
+  if (!hostname || !URL.canParse(raw)) return null;
+  const referrer = new URL(raw);
+  if (
+    (referrer.protocol !== "http:" && referrer.protocol !== "https:") ||
+    referrer.hostname.toLowerCase().replace(/\.$/, "") !== hostname
+  ) {
+    return null;
+  }
+  return pathnameFromPath(`${referrer.pathname}${referrer.search}`);
+}
+
+export function requestMatchesEmbedTarget(
+  event: H3Event,
+  targetPath: string,
+): boolean {
+  const allowed = allowedEmbedTargetPathnames(targetPath);
+  if (allowed.size === 0) return false;
+
+  const current = requestPathname(event);
+  if (current && allowed.has(current)) return true;
+
+  const headerTarget = headerTargetPathname(event);
+  if (headerTarget && allowed.has(headerTarget)) return true;
+
+  const referrerTarget = referrerTargetPathname(event);
+  return !!referrerTarget && allowed.has(referrerTarget);
+}
+
+function isEmbedRuntimeRequest(event: H3Event): boolean {
+  const pathname = requestPathname(event);
+  return (
+    !!pathname &&
+    (pathname === "/api" ||
+      pathname.startsWith("/api/") ||
+      pathname.startsWith("/@") ||
+      pathname.startsWith("/app/") ||
+      pathname.startsWith("/node_modules/") ||
+      pathname.startsWith("/packages/") ||
+      pathname === "/_agent-native" ||
+      pathname.startsWith("/_agent-native/"))
+  );
+}
+
+function isEmbedStaticRuntimeRequest(event: H3Event): boolean {
+  const pathname = requestPathname(event);
+  return (
+    !!pathname &&
+    (pathname.startsWith("/@") ||
+      pathname.startsWith("/app/") ||
+      pathname.startsWith("/node_modules/") ||
+      pathname.startsWith("/packages/"))
+  );
+}
+
+export function normalizeEmbedTargetPath(
+  raw: string | undefined | null,
+  requestOrigin?: string,
+): string | null {
+  const value = String(raw ?? "").trim();
+  if (!value || CONTROL_CHARS.test(value)) return null;
+
+  let path = value;
+  try {
+    if (/^[a-z][a-z0-9+.-]*:\/\//i.test(value)) {
+      const parsed = new URL(value);
+      if (requestOrigin) {
+        const expected = new URL(requestOrigin);
+        if (parsed.origin !== expected.origin) return null;
+      }
+      const base = getConfiguredAppBasePath();
+      if (
+        base &&
+        parsed.pathname !== base &&
+        !parsed.pathname.startsWith(`${base}/`)
+      ) {
+        return null;
+      }
+      path = `${parsed.pathname}${parsed.search}${parsed.hash}`;
+    }
+  } catch {
+    return null;
+  }
+
+  if (!path.startsWith("/")) path = `/${path}`;
+  if (path.startsWith("//") || path.startsWith("/\\")) return null;
+  if (/^\/[a-z][a-z0-9+.-]*:/i.test(path)) return null;
+  const base = getConfiguredAppBasePath();
+  const pathForValidation =
+    base && (path === base || path.startsWith(`${base}/`))
+      ? path
+      : `${base}${path}`;
+  if (normalizeAppPath(pathForValidation, base) === null) return null;
+  return stripConfiguredBasePath(path);
+}
+
+export async function createEmbedSessionTicket(
+  input: EmbedSessionTicketInput,
+): Promise<EmbedSessionTicket> {
+  const ownerEmail = input.ownerEmail.trim();
+  if (!ownerEmail) throw new Error("Embed session ticket requires ownerEmail.");
+  const targetPath = normalizeEmbedTargetPath(input.targetPath);
+  if (!targetPath)
+    throw new Error("Embed session ticket requires a safe path.");
+
+  const now = Date.now();
+  const context = getRequestContext();
+  const contextAuthenticatedAtMs = context?.identityAuthenticatedAtMs;
+  const contextSessionToken =
+    normalizedEmail(context?.userEmail) === normalizedEmail(ownerEmail)
+      ? context?.identitySessionToken
+      : undefined;
+  const authenticatedAtMs =
+    normalizedEmail(context?.userEmail) === normalizedEmail(ownerEmail) &&
+    typeof contextAuthenticatedAtMs === "number" &&
+    Number.isFinite(contextAuthenticatedAtMs)
+      ? contextAuthenticatedAtMs
+      : now;
+  const capabilityScope = isEmbedCapabilityScope(input.scope);
+  await ensureTable();
+  const ticket = crypto.randomBytes(32).toString("base64url");
+  const ticketHash = hashTicket(ticket);
+  const createdAt = Date.now();
+  const ttlSeconds = input.ttlSeconds ?? DEFAULT_TICKET_TTL_SECONDS;
+  const expiresAt = createdAt + Math.max(1, ttlSeconds) * 1000;
+  const client = getDbExec();
+  const insert = async (tx: DbExec) => {
+    if (!capabilityScope) {
+      const key = ownerHash(ownerEmail);
+      if (!key) throw new Error("Embed session ticket requires ownerEmail.");
+      await lockEmbedSessionsForOwner(tx, key);
+      const revokedBefore = await embedSessionsRevokedBefore(ownerEmail, tx);
+      if (revokedBefore !== null && authenticatedAtMs <= revokedBefore) {
+        throw new Error("Embed session ticket creation was revoked by logout.");
+      }
+      if (
+        contextSessionToken &&
+        !(await sourceSessionBelongsToOwner(
+          tx,
+          ownerEmail,
+          contextSessionToken,
+        ))
+      ) {
+        throw new Error("Embed session ticket source session was revoked.");
+      }
+    }
+    await tx.execute({
+      sql:
+        "INSERT INTO agent_native_embed_tickets " +
+        "(ticket_hash, owner_email, org_id, target_path, scope, created_at, expires_at, consumed_at) " +
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+      args: [
+        ticketHash,
+        ownerEmail,
+        input.orgId ?? null,
+        targetPath,
+        input.scope ?? null,
+        createdAt,
+        expiresAt,
+        null,
+      ],
+    });
+  };
+  if (capabilityScope) {
+    await insert(client);
+  } else {
+    if (!client.transaction) {
+      throw new Error(
+        "Embed session ticket creation requires database transactions.",
+      );
+    }
+    await client.transaction(insert);
+  }
+  return { ticket, ticketHash, expiresAt };
+}
+
+export async function resolveEmbedSessionTokenForHost(
+  token: string | undefined,
+  hostname: string,
+): Promise<EmbedSessionTokenClaims | null> {
+  const verified = verifyEmbedSessionToken(token);
+  if (!verified.ok || !embedTokenMatchesHostname(hostname, verified.claims)) {
+    return null;
+  }
+  if (
+    !isEmbedCapabilityScope(verified.claims.scope) &&
+    (await embedSessionIsRevoked(
+      verified.claims.ownerEmail,
+      Math.min(
+        verified.claims.issuedAtMs ?? verified.claims.iat * 1000,
+        verified.claims.ticketCreatedAtMs ?? Number.MAX_SAFE_INTEGER,
+      ),
+    ))
+  ) {
+    return null;
+  }
+  return verified.claims;
+}
+
+export async function resolveEmbedSessionCookieOwners(
+  tokens: string[],
+): Promise<string[]> {
+  if (tokens.length === 0) return [];
+  const owners = new Set<string>();
+  for (const token of tokens) {
+    const verified = verifyEmbedSessionToken(token);
+    if (!verified.ok || isEmbedCapabilityScope(verified.claims.scope)) continue;
+    const owner = normalizedEmail(verified.claims.ownerEmail);
+    if (owner) owners.add(owner);
+  }
+  return [...owners];
+}
+
+export async function consumeEmbedSessionTicket(
+  ticket: string | undefined | null,
+  options: ConsumeEmbedSessionTicketOptions = {},
+): Promise<ConsumedEmbedSessionTicket | null> {
+  const expectedOwnerEmail = normalizedEmail(options.expectedOwnerEmail);
+  const expectedOwnerKey = redactedIdentifier(expectedOwnerEmail);
+  const expectedOrgKey = redactedIdentifier(options.expectedOrgId);
+  if (!ticket) {
+    options.onResult?.({
+      outcome: "missing-ticket",
+      ticketKey: null,
+      ticketRowFound: false,
+      consumed: false,
+      expired: false,
+      expectedOwnerKey,
+      ticketOwnerKey: null,
+      expectedOrgKey,
+      ticketOrgKey: null,
+    });
+    return null;
+  }
+  await ensureTable();
+  const ticketHash = hashTicket(ticket);
+  const ticketKey = ticketHash.slice(0, 12);
+  const { rows } = await getDbExec().execute({
+    sql:
+      "SELECT ticket_hash, owner_email, org_id, target_path, scope, created_at, expires_at, consumed_at " +
+      "FROM agent_native_embed_tickets WHERE ticket_hash = ?",
+    args: [ticketHash],
+  });
+  if (rows.length === 0) {
+    options.onResult?.({
+      outcome: "not-found",
+      ticketKey,
+      ticketRowFound: false,
+      consumed: false,
+      expired: false,
+      expectedOwnerKey,
+      ticketOwnerKey: null,
+      expectedOrgKey,
+      ticketOrgKey: null,
+    });
+    return null;
+  }
+  const row: any = rows[0];
+  const createdAt = numberOrNull(row.created_at ?? row.createdAt);
+  const expiresAt = numberOrNull(row.expires_at ?? row.expiresAt);
+  const consumedAt = numberOrNull(row.consumed_at ?? row.consumedAt);
+  const ownerEmail = stringOrUndefined(row.owner_email ?? row.ownerEmail);
+  const ticketOwnerKey = redactedIdentifier(normalizedEmail(ownerEmail));
+  const orgId = stringOrUndefined(row.org_id ?? row.orgId);
+  const ticketOrgKey = redactedIdentifier(orgId);
+  const capabilityScope = isEmbedCapabilityScope(stringOrUndefined(row.scope));
+  if (!ownerEmail || createdAt === null || expiresAt === null) {
+    options.onResult?.({
+      outcome: "invalid-row",
+      ticketKey,
+      ticketRowFound: true,
+      consumed: false,
+      expired: false,
+      expectedOwnerKey,
+      ticketOwnerKey,
+      expectedOrgKey,
+      ticketOrgKey,
+    });
+    return null;
+  }
+  const identityMismatchAllowed =
+    options.allowCapabilityIdentityMismatch && capabilityScope;
+  if (consumedAt != null) {
+    options.onResult?.({
+      outcome: "already-consumed",
+      ticketKey,
+      ticketRowFound: true,
+      consumed: true,
+      expired: false,
+      expectedOwnerKey,
+      ticketOwnerKey,
+      expectedOrgKey,
+      ticketOrgKey,
+    });
+    return null;
+  }
+  if (
+    !identityMismatchAllowed &&
+    expectedOwnerEmail &&
+    ownerEmail &&
+    normalizedEmail(ownerEmail) !== expectedOwnerEmail
+  ) {
+    options.onResult?.({
+      outcome: "identity-mismatch",
+      ticketKey,
+      ticketRowFound: true,
+      consumed: false,
+      expired: false,
+      expectedOwnerKey,
+      ticketOwnerKey,
+      expectedOrgKey,
+      ticketOrgKey,
+    });
+    return null;
+  }
+  if (
+    !identityMismatchAllowed &&
+    options.expectedOrgId &&
+    orgId &&
+    orgId !== options.expectedOrgId
+  ) {
+    options.onResult?.({
+      outcome: "org-mismatch",
+      ticketKey,
+      ticketRowFound: true,
+      consumed: false,
+      expired: false,
+      expectedOwnerKey,
+      ticketOwnerKey,
+      expectedOrgKey,
+      ticketOrgKey,
+    });
+    return null;
+  }
+  const client = getDbExec();
+  const claim = async (
+    tx: DbExec,
+  ): Promise<
+    "consumed" | "revoked" | "expired" | "consumption-race" | "invalid-row"
+  > => {
+    if (!capabilityScope) {
+      const key = ownerHash(ownerEmail);
+      if (!key) return "invalid-row";
+      await lockEmbedSessionsForOwner(tx, key);
+      const revokedBefore = await embedSessionsRevokedBefore(ownerEmail, tx);
+      if (revokedBefore !== null && createdAt <= revokedBefore) {
+        return "revoked";
+      }
+    }
+    const consumedAt = Date.now();
+    if (expiresAt < consumedAt) return "expired";
+    const result = await tx.execute({
+      sql:
+        "UPDATE agent_native_embed_tickets SET consumed_at = ? " +
+        "WHERE ticket_hash = ? AND consumed_at IS NULL",
+      args: [consumedAt, ticketHash],
+    });
+    return result.rowsAffected === 0 ? "consumption-race" : "consumed";
+  };
+  let outcome: Awaited<ReturnType<typeof claim>>;
+  if (capabilityScope) {
+    outcome = await claim(client);
+  } else {
+    if (!client.transaction) {
+      throw new Error(
+        "Embed ticket consumption requires database transactions.",
+      );
+    }
+    outcome = await client.transaction(claim);
+  }
+  if (outcome !== "consumed") {
+    options.onResult?.({
+      outcome,
+      ticketKey,
+      ticketRowFound: true,
+      consumed: outcome === "consumption-race",
+      expired: outcome === "expired",
+      expectedOwnerKey,
+      ticketOwnerKey,
+      expectedOrgKey,
+      ticketOrgKey,
+    });
+    return null;
+  }
+
+  const targetPath = normalizeEmbedTargetPath(
+    stringOrUndefined(row.target_path ?? row.targetPath),
+  );
+  if (!targetPath) {
+    options.onResult?.({
+      outcome: "invalid-row",
+      ticketKey,
+      ticketRowFound: true,
+      consumed: true,
+      expired: false,
+      expectedOwnerKey,
+      ticketOwnerKey,
+      expectedOrgKey,
+      ticketOrgKey,
+    });
+    return null;
+  }
+
+  options.onResult?.({
+    outcome: "consumed",
+    ticketKey,
+    ticketRowFound: true,
+    consumed: true,
+    expired: false,
+    expectedOwnerKey,
+    ticketOwnerKey,
+    expectedOrgKey,
+    ticketOrgKey,
+  });
+
+  return {
+    ownerEmail,
+    ...(orgId ? { orgId } : {}),
+    targetPath,
+    ...(stringOrUndefined(row.scope)
+      ? { scope: stringOrUndefined(row.scope) }
+      : {}),
+    expiresAt,
+    ticketCreatedAtMs: createdAt,
+  };
+}
+
+export function signEmbedSessionToken(input: {
+  ownerEmail: string;
+  orgId?: string | null;
+  targetPath: string;
+  audienceHost?: string;
+  scope?: string | null;
+  ticketCreatedAtMs?: number;
+  ttlSeconds?: number;
+}): string {
+  const targetPath = normalizeEmbedTargetPath(input.targetPath) ?? "/";
+  const issuedAtMs = Date.now();
+  const now = Math.floor(issuedAtMs / 1000);
+  const ttl = Math.max(1, input.ttlSeconds ?? DEFAULT_TOKEN_TTL_SECONDS);
+  const claims: EmbedSessionTokenClaims = {
+    kind: TOKEN_KIND,
+    ownerEmail: input.ownerEmail,
+    targetPath,
+    iat: now,
+    issuedAtMs,
+    exp: now + ttl,
+  };
+  if (input.ticketCreatedAtMs != null) {
+    claims.ticketCreatedAtMs = input.ticketCreatedAtMs;
+  }
+  if (input.orgId) claims.orgId = input.orgId;
+  if (input.audienceHost) {
+    claims.audienceHost = input.audienceHost.toLowerCase();
+  }
+  if (input.scope) claims.scope = input.scope;
+  const payload = base64UrlEncode(JSON.stringify(claims));
+  return `${payload}.${signPayload(payload)}`;
+}
+
+export function verifyEmbedSessionToken(
+  token: string | undefined | null,
+): VerifyEmbedSessionTokenResult {
+  if (!token || typeof token !== "string") {
+    return { ok: false, reason: "missing" };
+  }
+  const parts = token.split(".");
+  if (parts.length !== 2 || !parts[0] || !parts[1]) {
+    return { ok: false, reason: "shape" };
+  }
+  const [payload, signature] = parts;
+  const expected = signPayload(payload);
+  const sig = Buffer.from(signature);
+  const exp = Buffer.from(expected);
+  if (sig.length !== exp.length || !crypto.timingSafeEqual(sig, exp)) {
+    return { ok: false, reason: "signature" };
+  }
+
+  let claims: EmbedSessionTokenClaims;
+  try {
+    claims = JSON.parse(base64UrlDecode(payload).toString("utf8"));
+  } catch {
+    return { ok: false, reason: "payload" };
+  }
+
+  if (
+    !claims ||
+    claims.kind !== TOKEN_KIND ||
+    typeof claims.ownerEmail !== "string" ||
+    !claims.ownerEmail ||
+    typeof claims.iat !== "number" ||
+    !Number.isFinite(claims.iat) ||
+    (claims.issuedAtMs !== undefined &&
+      (typeof claims.issuedAtMs !== "number" ||
+        !Number.isFinite(claims.issuedAtMs))) ||
+    (claims.ticketCreatedAtMs !== undefined &&
+      (typeof claims.ticketCreatedAtMs !== "number" ||
+        !Number.isFinite(claims.ticketCreatedAtMs))) ||
+    typeof claims.exp !== "number" ||
+    !Number.isFinite(claims.exp)
+  ) {
+    return { ok: false, reason: "claims" };
+  }
+  if (claims.exp < Math.floor(Date.now() / 1000)) {
+    return { ok: false, reason: "expired" };
+  }
+  claims.targetPath = normalizeEmbedTargetPath(claims.targetPath) ?? "/";
+  return { ok: true, claims };
+}
+
+function cookieDomainAttrs(event: H3Event): { domain?: string } {
+  if (isFirstPartyAppRequest(event)) return {};
+  const domain = resolveAuthCookieNamespace().frameworkCookieDomain;
+  return domain ? { domain } : {};
+}
+
+function crossSiteCookieAttrs(event: H3Event): {
+  sameSite: "lax" | "none";
+  secure: boolean;
+  partitioned?: boolean;
+} {
+  return isHttpsRequest(event)
+    ? { sameSite: "none", secure: true, partitioned: true }
+    : { sameSite: "lax", secure: false };
+}
+
+export function setEmbedSessionCookie(event: H3Event, token: string): void {
+  setCookie(event, EMBED_SESSION_COOKIE, token, {
+    httpOnly: true,
+    ...crossSiteCookieAttrs(event),
+    ...cookieDomainAttrs(event),
+    path: "/",
+    maxAge: DEFAULT_TOKEN_TTL_SECONDS,
+  });
+}
+
+function bearerToken(event: H3Event): string | undefined {
+  const auth = getHeader(event, "authorization");
+  if (!auth) return undefined;
+  const match = /^Bearer\s+(.+)$/i.exec(String(auth).trim());
+  return match?.[1]?.trim();
+}
+
+function queryToken(event: H3Event): string | undefined {
+  const raw = getQuery(event)?.[EMBED_TOKEN_QUERY_PARAM];
+  const value = Array.isArray(raw) ? raw[0] : raw;
+  if (value) return value;
+  try {
+    return (
+      new URL(
+        requestUrlFromEvent(event),
+        "http://agent-native.invalid",
+      ).searchParams.get(EMBED_TOKEN_QUERY_PARAM) ?? undefined
+    );
+  } catch {
+    return undefined;
+  }
+}
+
+export async function resolveEmbedSessionFromRequest(
+  event: H3Event,
+): Promise<ResolvedEmbedSession | null> {
+  const hostname = requestHostname(event) ?? "";
+  const candidates = [
+    { token: queryToken(event), source: "query" },
+    { token: bearerToken(event), source: "bearer" },
+    { token: getCookie(event, EMBED_SESSION_COOKIE), source: "cookie" },
+  ];
+  for (const candidate of candidates) {
+    const claims = await resolveEmbedSessionTokenForHost(
+      candidate.token,
+      hostname,
+    );
+    if (!claims) continue;
+    const matchesTarget = requestMatchesEmbedTarget(event, claims.targetPath);
+    const isRuntimeRequest = isEmbedRuntimeRequest(event);
+    const isRuntimeCookieRequest =
+      candidate.source === "cookie" && isRuntimeRequest;
+    const isRuntimeQueryRequest =
+      candidate.source === "query" && isRuntimeRequest;
+    const capabilityScope = isEmbedCapabilityScope(claims.scope);
+    const allowsUnboundRuntimeRequest =
+      !capabilityScope || isEmbedStaticRuntimeRequest(event);
+    if (
+      !matchesTarget &&
+      (!allowsUnboundRuntimeRequest ||
+        (!isRuntimeCookieRequest && !isRuntimeQueryRequest))
+    ) {
+      continue;
+    }
+    if (candidate.source === "query" && candidate.token) {
+      try {
+        setEmbedSessionCookie(event, candidate.token);
+        setResponseHeader(event, "Referrer-Policy", "same-origin");
+      } catch {
+        // Some tests and edge runtimes expose read-only request shims. The
+        // query token itself is still valid for this request.
+      }
+    }
+    return {
+      email: claims.ownerEmail,
+      token: candidate.token!,
+      targetPath: claims.targetPath,
+      ...(claims.orgId ? { orgId: claims.orgId } : {}),
+      ...(claims.scope ? { scope: claims.scope } : {}),
+    };
+  }
+  return null;
+}
+
+export function requestHasEmbedAuthMarker(event: H3Event): boolean {
+  try {
+    const q = getQuery(event) ?? {};
+    const queryToken = Array.isArray(q[EMBED_TOKEN_QUERY_PARAM])
+      ? q[EMBED_TOKEN_QUERY_PARAM][0]
+      : q[EMBED_TOKEN_QUERY_PARAM];
+    const cookieToken = getCookie(event, EMBED_SESSION_COOKIE);
+    const candidates = [
+      { token: queryToken, allowRuntime: true },
+      { token: bearerToken(event), allowRuntime: false },
+      { token: cookieToken, allowRuntime: true },
+    ];
+    const runtimeRequest = isEmbedRuntimeRequest(event);
+    for (const candidate of candidates) {
+      const verified = verifyEmbedSessionToken(candidate.token);
+      const allowsUnboundRuntimeRequest =
+        verified.ok &&
+        (!isEmbedCapabilityScope(verified.claims.scope) ||
+          isEmbedStaticRuntimeRequest(event));
+      if (
+        verified.ok &&
+        embedTokenMatchesRequestAudience(event, verified.claims) &&
+        (requestMatchesEmbedTarget(event, verified.claims.targetPath) ||
+          (candidate.allowRuntime &&
+            runtimeRequest &&
+            allowsUnboundRuntimeRequest))
+      ) {
+        return true;
+      }
+    }
+  } catch {
+    // ignore
+  }
+  return false;
+}
+
+export function isEmbedModeRequest(event: H3Event): boolean {
+  try {
+    const q = getQuery(event) ?? {};
+    return (
+      q[EMBED_MODE_QUERY_PARAM] === "1" || q[EMBED_MODE_QUERY_PARAM] === "true"
+    );
+  } catch {
+    return false;
+  }
+}

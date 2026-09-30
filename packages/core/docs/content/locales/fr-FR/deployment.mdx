@@ -1,0 +1,90 @@
+---
+title: "Déploiement"
+description: "Déployez une application ou un workspace Agent-Native sur une plateforme compatible avec Nitro et une base PostgreSQL persistante."
+---
+
+<!-- i18n-docs-ignore -->
+
+# Déploiement
+
+<a id="self-host-quickstart"></a>
+<a id="skip-ensure-tables"></a>
+
+Les applications Agent-Native utilisent Nitro. Choisissez le parcours qui correspond à ce que vous déployez :
+
+<Cards columns={2}>
+
+### [Déployer une application](/docs/deploy-an-app)
+
+Construisez une application et lancez-la sur son propre domaine.
+
+### [Déployer un workspace](/docs/workspace-deployment)
+
+Exécutez plusieurs applications sous une même origine avec une session partagée.
+
+</Cards>
+
+## Avant le déploiement : choisissez une base persistante {#persistent-database}
+
+Chaque application déployée a besoin d'une base PostgreSQL persistante. Définissez `DATABASE_URL` dans l'environnement de déploiement avant le premier déploiement de production. Les fournisseurs PostgreSQL hébergés incluent [Neon](/docs/neon), [Supabase](/docs/supabase), Railway, Render, [Amazon RDS for PostgreSQL](/docs/aws-rds), [Cloud SQL for PostgreSQL](/docs/cloud-sql) et [Azure Database for PostgreSQL](/docs/azure-postgresql). Consultez le guide [Plain Postgres](/docs/postgres) pour les autres services gérés et les serveurs PostgreSQL auto-hébergés.
+
+Une application autonome a besoin d'un `BETTER_AUTH_SECRET` stable. Un workspace avec des requêtes signées entre applications a besoin de `A2A_SECRET`.
+
+Définissez ces valeurs dans les paramètres d’environnement de l’hébergeur, pas seulement dans le `.env` local. Générez le secret d’authentification avec `openssl rand -hex 32`. Agent-Native ne fournit pas de compte de livraison d’e-mails ; connectez Resend ou SendGrid séparément.
+
+## L'envoi d'e-mails est facultatif, mais recommandé {#email-provider}
+
+Un fournisseur d'e-mails n'est pas nécessaire pour l'authentification par e-mail et mot de passe. Sans fournisseur, les applications déployées utilisent l'inscription et la connexion par e-mail et mot de passe, ignorent la vérification de l'e-mail à l'inscription et ne proposent pas l'authentification par lien magique.
+
+Connectez Resend ou SendGrid avant le déploiement si vous voulez des liens magiques, la vérification des e-mails, la réinitialisation des mots de passe, les invitations ou les notifications de partage. Définissez `RESEND_API_KEY` ou `SENDGRID_API_KEY`; SendGrid nécessite aussi `EMAIL_FROM`. Consultez [Authentification](/docs/authentication) pour les modes d'authentification disponibles.
+
+### Personnaliser les e-mails du framework {#email-templates}
+
+Chaque e-mail envoyé par le framework a un modèle par défaut. Pour utiliser votre propre design, enregistrez un override depuis un plugin serveur. Le framework choisit toujours le destinataire et l'expéditeur et remet le message ; votre override décide de ce que dit le message et de son apparence.
+
+```ts
+// server/plugins/email-templates.ts
+import {
+  escapeEmailHtml,
+  overrideTransactionalEmail,
+} from "@agent-native/core/server";
+
+export default function registerEmailTemplates(): void {
+  overrideTransactionalEmail("core.resource-shared", (props) => ({
+    subject: `${props.sender.name} shared "${props.resource.title}"`,
+    html: `<p>${escapeEmailHtml(props.sender.name)} invited you to
+      <a href="${escapeEmailHtml(props.resource.url)}">${escapeEmailHtml(props.resource.title)}</a>
+      in ${escapeEmailHtml(props.app.name)}.</p>`,
+  }));
+}
+```
+
+| ID de l'e-mail                   | Props                                                                              |
+| -------------------------------- | ---------------------------------------------------------------------------------- |
+| `core.verify-signup`             | `email`, `verifyUrl`                                                               |
+| `core.reset-password`            | `email`, `resetUrl`                                                                |
+| `core.magic-link`                | `email`, `magicLinkUrl`                                                            |
+| `core.change-email-confirmation` | `email`, `newEmail`, `confirmationUrl`                                             |
+| `core.change-email-verification` | `email`, `verifyUrl`                                                               |
+| `core.organization-invite`       | `invitee`, `orgName`, `inviter`, `acceptUrl`                                       |
+| `core.builder-credit-limit`      | `subject`, `heading`, `body`, `upgradeLabel`, `upgradeUrl`                         |
+| `core.resource-shared`           | `recipientEmail`, `sender`, `resource` (`type`, `title`, `url`), `role`, `message` |
+
+Chaque override reçoit aussi `app` (`name`, `logoUrl`). Le second argument contient le rendu par défaut, pour réutiliser son objet ou son texte.
+
+- Les props sont des valeurs brutes. Échappez-les avec `escapeEmailHtml` avant de les insérer dans une chaîne HTML.
+- Renvoyez `react` avec un élément React au lieu de `html` pour rendre un composant. React échappe les props pour vous.
+- Omettez `subject` pour conserver l'objet par défaut. Omettez `text` pour dériver le texte brut de votre HTML.
+- Si un override lève une erreur, l'envoi échoue. Le framework ne revient pas au design par défaut. L'aperçu des e-mails transactionnels rend votre override : vérifiez-le là.
+
+## Cibles prises en charge
+
+Agent-Native prend en charge [Node.js](/docs/node-js), [Docker](/docs/docker), [Vercel](/docs/vercel), [Netlify](/docs/netlify), [Cloudflare Workers](/docs/cloudflare#cloudflare-workers), [AWS Amplify](/docs/aws-amplify), [AWS Lambda](/docs/aws-lambda), [Deno Deploy](/docs/deno-deploy), [Azure Static Web Apps](/docs/azure-static-web-apps), [Koyeb](/docs/koyeb) et [Render](/docs/render).
+
+Consultez la [référence des variables d'environnement de déploiement](/docs/deployment-environment-variables) pour les réglages avancés, les secrets et la production.
+
+## Suite
+
+- [Déployer une application](/docs/deploy-an-app)
+- [Déployer un workspace](/docs/workspace-deployment)
+- [Base de données](/docs/server-database#production)

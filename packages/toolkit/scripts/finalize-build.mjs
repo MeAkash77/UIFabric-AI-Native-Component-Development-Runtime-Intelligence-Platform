@@ -1,0 +1,65 @@
+import {
+  copyFileSync,
+  existsSync,
+  mkdirSync,
+  readdirSync,
+  statSync,
+} from "node:fs";
+import { dirname, extname, join, relative } from "node:path";
+
+function walk(dir) {
+  const files = [];
+  for (const name of readdirSync(dir)) {
+    const path = join(dir, name);
+    if (statSync(path).isDirectory()) {
+      files.push(...walk(path));
+    } else {
+      files.push(path);
+    }
+  }
+  return files;
+}
+for (const sourceFile of walk("src")) {
+  if (extname(sourceFile) !== ".css") continue;
+  const output = join("dist", relative("src", sourceFile));
+  mkdirSync(dirname(output), { recursive: true });
+  copyFileSync(sourceFile, output);
+}
+
+const missing = [];
+for (const sourceFile of walk("src")) {
+  const extension = extname(sourceFile);
+  if (extension !== ".ts" && extension !== ".tsx" && extension !== ".css") {
+    continue;
+  }
+  if (
+    /\.(?:spec|test)\.(?:ts|tsx)$/.test(sourceFile) ||
+    sourceFile.endsWith(".e2e-host.tsx")
+  ) {
+    continue;
+  }
+
+  const relativeSource = relative("src", sourceFile);
+  const withoutExtension = relativeSource.slice(0, -extension.length);
+
+  if (extension === ".css") {
+    const output = join("dist", `${withoutExtension}.css`);
+    if (!existsSync(output)) missing.push(output);
+    continue;
+  }
+
+  for (const outputExtension of [".js", ".d.ts"]) {
+    const output = join("dist", `${withoutExtension}${outputExtension}`);
+    if (!existsSync(output)) missing.push(output);
+  }
+}
+
+if (missing.length > 0) {
+  console.error(
+    [
+      "[toolkit finalize-build] Missing expected dist output:",
+      ...missing.map((path) => `  - ${path}`),
+    ].join("\n"),
+  );
+  process.exitCode = 1;
+}

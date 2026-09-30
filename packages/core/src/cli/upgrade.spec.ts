@@ -1,0 +1,1191 @@
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+
+import {
+  bundledCoreMigrationManifestPath,
+  readMigrationManifest,
+} from "../package-lifecycle/migration-manifest.js";
+import {
+  buildUpgradeDoctorReport,
+  detectUpgradeProject,
+  isPinnedOrLocalVersion,
+  parseUpgradeArgs,
+  planMigrationDependencyAdditions,
+  pinResolvedAgentNativeVersions,
+  runUpgrade,
+  selectMigrationDependencies,
+  shouldBumpAgentNativeVersion,
+  type UpgradeIo,
+} from "./upgrade.js";
+
+const tmpRoots: string[] = [];
+const toolkitVersionRange = ">=0.23.0";
+const upgradeEnvKeys = [
+  "APP_NAME",
+  "AGENT_NATIVE_WORKSPACE_APP_ID",
+  "VITE_AGENT_NATIVE_WORKSPACE_APP_ID",
+  "DATABASE_URL",
+  "SENTRY_SERVER_DSN",
+  "SENTRY_CLIENT_DSN",
+  "SENTRY_DSN",
+  "VITE_SENTRY_CLIENT_DSN",
+  "VITE_SENTRY_DSN",
+  "SENTRY_CLIENT_KEY",
+  "VITE_SENTRY_CLIENT_KEY",
+  "SENTRY_PROJECT_ID",
+  "VITE_SENTRY_PROJECT_ID",
+  "SENTRY_INGEST_HOST",
+  "VITE_SENTRY_INGEST_HOST",
+  "SENTRY_AUTH_TOKEN",
+  "SENTRY_ORG",
+  "SENTRY_ORG_SLUG",
+  "SENTRY_PROJECT",
+  "SENTRY_CLIENT_PROJECT",
+  "AUTH_SSO",
+  "AUTH_SCIM",
+  "VITE_AMPLITUDE_API_KEY",
+  "MICROSOFT_TEAMS_APP_ID",
+  "MICROSOFT_TEAMS_APP_PASSWORD",
+] as const;
+const savedUpgradeEnv = new Map<string, string | undefined>();
+
+function clearUpgradeEnvironment(): void {
+  for (const key of upgradeEnvKeys) {
+    if (!savedUpgradeEnv.has(key)) savedUpgradeEnv.set(key, process.env[key]);
+    delete process.env[key];
+  }
+}
+
+afterEach(() => {
+  vi.restoreAllMocks();
+  for (const [key, value] of savedUpgradeEnv) {
+    if (value === undefined) delete process.env[key];
+    else process.env[key] = value;
+  }
+  savedUpgradeEnv.clear();
+  for (const root of tmpRoots.splice(0)) {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+beforeEach(clearUpgradeEnvironment);
+
+function makeTempProject(layout: {
+  kind?: "standalone" | "workspace";
+  rootPkg: Record<string, unknown>;
+  workspaceYaml?: string;
+  apps?: Record<string, Record<string, unknown>>;
+  workspaces?: Record<string, Record<string, unknown>>;
+}): string {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "an-upgrade-"));
+  tmpRoots.push(root);
+  fs.writeFileSync(
+    path.join(root, "package.json"),
+    JSON.stringify(layout.rootPkg, null, 2),
+  );
+  if (layout.kind === "workspace") {
+    fs.writeFileSync(
+      path.join(root, "pnpm-workspace.yaml"),
+      layout.workspaceYaml ?? "packages:\n  - apps/*\n  - packages/*\n",
+    );
+    if (layout.apps) {
+      for (const [name, pkg] of Object.entries(layout.apps)) {
+        const appDir = path.join(root, "apps", name);
+        fs.mkdirSync(appDir, { recursive: true });
+        fs.writeFileSync(
+          path.join(appDir, "package.json"),
+          JSON.stringify(pkg, null, 2),
+        );
+      }
+    }
+    if (layout.workspaces) {
+      for (const [relativePath, pkg] of Object.entries(layout.workspaces)) {
+        const packageDir = path.join(root, relativePath);
+        fs.mkdirSync(packageDir, { recursive: true });
+        fs.writeFileSync(
+          path.join(packageDir, "package.json"),
+          JSON.stringify(pkg, null, 2),
+        );
+      }
+    }
+  }
+  return root;
+}
+
+function writeInstalledPackage(
+  dir: string,
+  version: string,
+  name = "@agent-native/core",
+): void {
+  const packageDir = path.join(dir, "node_modules", ...name.split("/"));
+  fs.mkdirSync(packageDir, { recursive: true });
+  fs.writeFileSync(
+    path.join(packageDir, "package.json"),
+    `${JSON.stringify({ name, version })}\n`,
+  );
+}
+
+function writeToolkitMigrationManifest(toolkitDir: string): void {
+  const packagePath = path.join(toolkitDir, "package.json");
+  const pkg = JSON.parse(fs.readFileSync(packagePath, "utf-8")) as {
+    exports?: Record<string, string>;
+  };
+  fs.writeFileSync(
+    packagePath,
+    `${JSON.stringify({
+      ...pkg,
+      exports: {
+        ...pkg.exports,
+        "./migration-manifest.json": "./migration-manifest.json",
+      },
+    })}\n`,
+  );
+  fs.writeFileSync(
+    path.join(toolkitDir, "migration-manifest.json"),
+    `${JSON.stringify({ sinceVersion: "0.110.0", moves: {} })}\n`,
+  );
+}
+
+function captureIo(overrides: Partial<UpgradeIo> = {}): {
+  io: UpgradeIo;
+  out: string[];
+  err: string[];
+} {
+  const out: string[] = [];
+  const err: string[] = [];
+  return {
+    out,
+    err,
+    io: {
+      log: (m) => out.push(m),
+      err: (m) => err.push(m),
+      spawn: () => ({
+        status: 0,
+        pid: 1,
+        output: [],
+        stdout: "",
+        stderr: "",
+        signal: null,
+      }),
+      runSkillsUpdate: async () => {},
+      ...overrides,
+    },
+  };
+}
+
+describe("parseUpgradeArgs", () => {
+  it("defaults to run", () => {
+    expect(parseUpgradeArgs([])).toEqual({ command: "run" });
+  });
+
+  it("parses check/doctor and flags", () => {
+    expect(
+      parseUpgradeArgs([
+        "check",
+        "--dry-run",
+        "--codemods",
+        "--yes",
+        "--skip-install",
+        "--skip-skills",
+        "--skip-verify",
+        "--force",
+        "--json",
+        "--cwd",
+        "/tmp/app",
+      ]),
+    ).toEqual({
+      command: "check",
+      dryRun: true,
+      codemods: true,
+      yes: true,
+      skipInstall: true,
+      skipSkills: true,
+      skipVerify: true,
+      force: true,
+      json: true,
+      cwd: "/tmp/app",
+    });
+  });
+});
+
+describe("version helpers", () => {
+  it("detects local pins", () => {
+    expect(isPinnedOrLocalVersion("file:../core")).toBe(true);
+    expect(isPinnedOrLocalVersion("workspace:*")).toBe(true);
+    expect(isPinnedOrLocalVersion("link:../core")).toBe(true);
+    expect(isPinnedOrLocalVersion("^0.9.0")).toBe(false);
+  });
+
+  it("only bumps non-latest published ranges", () => {
+    expect(shouldBumpAgentNativeVersion("latest")).toBe(false);
+    expect(shouldBumpAgentNativeVersion("workspace:*")).toBe(false);
+    expect(shouldBumpAgentNativeVersion("^0.8.1")).toBe(true);
+    expect(shouldBumpAgentNativeVersion("0.9.0")).toBe(true);
+  });
+});
+
+describe("detectUpgradeProject + doctor", () => {
+  it("detects standalone apps and finds overrides/bumps", () => {
+    const root = makeTempProject({
+      rootPkg: {
+        name: "old-app",
+        dependencies: {
+          "@agent-native/core": "^0.8.0",
+          "@agent-native/dispatch": "latest",
+        },
+        pnpm: {
+          overrides: {
+            "@agent-native/dispatch": "file:./vendor/dispatch",
+          },
+          patchedDependencies: {
+            "@agent-native/core@0.8.0": "patches/core.patch",
+          },
+        },
+      },
+    });
+
+    const project = detectUpgradeProject(root);
+    expect(project).toMatchObject({ root, kind: "standalone" });
+    const report = buildUpgradeDoctorReport(project!);
+    expect(report.findings).toHaveLength(2);
+    expect(report.bumps).toEqual([
+      expect.objectContaining({
+        name: "@agent-native/core",
+        from: "^0.8.0",
+        to: "latest",
+      }),
+    ]);
+  });
+
+  it("walks workspace apps for bumps", () => {
+    const root = makeTempProject({
+      kind: "workspace",
+      rootPkg: {
+        name: "ws",
+        dependencies: { "@agent-native/core": "latest" },
+      },
+      apps: {
+        analytics: {
+          name: "analytics",
+          dependencies: {
+            "@agent-native/core": "0.7.0",
+            "@agent-native/dispatch": "^0.7.0",
+          },
+        },
+      },
+    });
+
+    const project = detectUpgradeProject(root);
+    expect(project?.kind).toBe("workspace");
+    const report = buildUpgradeDoctorReport(project!);
+    expect(report.bumps.map((b) => b.name).sort()).toEqual([
+      "@agent-native/core",
+      "@agent-native/dispatch",
+    ]);
+  });
+
+  it("walks package globs from pnpm-workspace.yaml", () => {
+    const root = makeTempProject({
+      kind: "workspace",
+      workspaceYaml: "packages:\n  - templates/*\n  - tools/**\n",
+      rootPkg: {
+        name: "ws",
+        dependencies: { "@agent-native/core": "latest" },
+      },
+      workspaces: {
+        "templates/analytics": {
+          name: "analytics",
+          dependencies: { "@agent-native/core": "0.7.0" },
+        },
+        "tools/internal/worker": {
+          name: "worker",
+          dependencies: { "@agent-native/dispatch": "^0.7.0" },
+        },
+      },
+    });
+
+    const project = detectUpgradeProject(root);
+    expect(
+      project?.packageFiles.map((file) => path.relative(root, file)),
+    ).toEqual([
+      "package.json",
+      "templates/analytics/package.json",
+      "tools/internal/worker/package.json",
+    ]);
+    const report = buildUpgradeDoctorReport(project!);
+    expect(report.bumps.map((b) => b.name).sort()).toEqual([
+      "@agent-native/core",
+      "@agent-native/dispatch",
+    ]);
+  });
+
+  it("discovers standard Yarn workspaces from package.json", () => {
+    const root = makeTempProject({
+      kind: "workspace",
+      rootPkg: {
+        name: "ws",
+        workspaces: ["apps/*"],
+      },
+      apps: {
+        mail: {
+          name: "mail",
+          dependencies: { "@agent-native/core": "^0.8.0" },
+        },
+      },
+    });
+    fs.rmSync(path.join(root, "pnpm-workspace.yaml"));
+
+    const project = detectUpgradeProject(root);
+    expect(project).toMatchObject({ root, kind: "workspace" });
+    expect(
+      project?.packageFiles.map((file) => path.relative(root, file)),
+    ).toEqual(["package.json", "apps/mail/package.json"]);
+    expect(buildUpgradeDoctorReport(project!).bumps).toEqual([
+      expect.objectContaining({
+        name: "@agent-native/core",
+        file: path.join(root, "apps/mail/package.json"),
+      }),
+    ]);
+  });
+
+  it("reports a manifest it could not parse instead of scanning around it", () => {
+    const root = makeTempProject({
+      kind: "workspace",
+      rootPkg: {
+        name: "ws",
+        dependencies: { "@agent-native/core": "latest" },
+      },
+      apps: { mail: { name: "mail" } },
+    });
+    fs.writeFileSync(
+      path.join(root, "apps", "mail", "package.json"),
+      "{ not json",
+    );
+
+    const report = buildUpgradeDoctorReport(detectUpgradeProject(root)!);
+    expect(report.unreadable).toHaveLength(1);
+    expect(report.unreadable[0]).toContain(
+      path.join("apps", "mail", "package.json"),
+    );
+  });
+});
+
+describe("pinResolvedAgentNativeVersions", () => {
+  it("reports an unparseable manifest instead of silently skipping it", () => {
+    const root = makeTempProject({
+      kind: "workspace",
+      rootPkg: {
+        name: "ws",
+        dependencies: { "@agent-native/core": "latest" },
+      },
+      apps: {
+        mail: {
+          name: "mail",
+          dependencies: { "@agent-native/core": "latest" },
+        },
+      },
+    });
+    writeInstalledPackage(root, "0.131.4");
+    fs.writeFileSync(
+      path.join(root, "apps", "mail", "package.json"),
+      "{ not json",
+    );
+
+    const result = pinResolvedAgentNativeVersions(detectUpgradeProject(root)!);
+    expect(result.pins.map((pin) => pin.version)).toEqual(["0.131.4"]);
+    expect(result.unresolved).toEqual([]);
+    expect(result.unreadable).toHaveLength(1);
+    expect(result.unreadable[0]).toContain(
+      path.join("apps", "mail", "package.json"),
+    );
+  });
+});
+
+describe("migration dependency selection", () => {
+  const dependencies =
+    readMigrationManifest(bundledCoreMigrationManifestPath())?.dependencies ??
+    [];
+
+  it("selects optional peers from the actual feature configuration", () => {
+    expect(
+      selectMigrationDependencies(dependencies, {}).map(({ name }) => name),
+    ).toEqual(["@electric-sql/pglite"]);
+
+    expect(
+      selectMigrationDependencies(dependencies, {
+        DATABASE_URL: "postgres://database",
+        SENTRY_CLIENT_DSN: "https://key@example/123",
+        SENTRY_AUTH_TOKEN: "source-map-token",
+        SENTRY_ORG: "agent-native",
+        SENTRY_PROJECT: "framework",
+        AUTH_SSO: " yes ",
+        AUTH_SCIM: "off",
+        VITE_AMPLITUDE_API_KEY: "amplitude-key",
+      }).map(({ name }) => name),
+    ).toEqual([
+      "@sentry/browser",
+      "@sentry/vite-plugin",
+      "@better-auth/sso",
+      "@amplitude/analytics-browser",
+    ]);
+
+    expect(
+      selectMigrationDependencies(dependencies, {
+        DATABASE_URL: "pglite://memory",
+        SENTRY_CLIENT_KEY: "key",
+        VITE_SENTRY_PROJECT_ID: "project",
+        SENTRY_INGEST_HOST: "host",
+        AUTH_SCIM: "1",
+      }).map(({ name }) => name),
+    ).toEqual([
+      "@electric-sql/pglite",
+      "@sentry/node",
+      "@sentry/browser",
+      "@better-auth/scim",
+    ]);
+
+    expect(
+      selectMigrationDependencies(dependencies, {
+        APP_NAME: "mail-app",
+        MAIL_APP_DATABASE_URL: "pglite://memory",
+        DATABASE_URL: "postgres://database",
+      }).map(({ name }) => name),
+    ).toContain("@electric-sql/pglite");
+    expect(
+      selectMigrationDependencies(dependencies, {
+        APP_NAME: "mail-app",
+        MAIL_APP_DATABASE_URL: "postgres://database",
+        DATABASE_URL: "pglite://memory",
+      }).map(({ name }) => name),
+    ).not.toContain("@electric-sql/pglite");
+
+    expect(
+      selectMigrationDependencies(dependencies, {
+        MICROSOFT_TEAMS_APP_ID: "teams-app-id",
+        MICROSOFT_TEAMS_APP_PASSWORD: "teams-app-password",
+      }).map(({ name }) => name),
+    ).toContain("botframework-connector");
+    expect(
+      selectMigrationDependencies(dependencies, {
+        MICROSOFT_TEAMS_APP_ID: "teams-app-id",
+      }).map(({ name }) => name),
+    ).not.toContain("botframework-connector");
+  });
+
+  it("plans peers per Core app using app and workspace env without secrets", () => {
+    clearUpgradeEnvironment();
+    const root = makeTempProject({
+      kind: "workspace",
+      rootPkg: {
+        name: "workspace",
+        dependencies: { "@agent-native/core": "latest" },
+      },
+      apps: {
+        enabled: {
+          name: "enabled",
+          dependencies: { "@agent-native/core": "latest" },
+        },
+        pglite: {
+          name: "pglite",
+          dependencies: { "@agent-native/core": "latest" },
+        },
+        unrelated: { name: "unrelated" },
+      },
+    });
+    fs.writeFileSync(
+      path.join(root, ".env"),
+      "DATABASE_URL=postgres://workspace-secret\nAUTH_SSO=false\n",
+    );
+    fs.writeFileSync(
+      path.join(root, "apps", "enabled", ".env"),
+      "AUTH_SSO=false\n",
+    );
+    fs.writeFileSync(
+      path.join(root, "apps", "enabled", ".env.local"),
+      "AUTH_SSO=true\nVITE_AMPLITUDE_API_KEY=amplitude-secret\nMICROSOFT_TEAMS_APP_ID=teams-app-id\nMICROSOFT_TEAMS_APP_PASSWORD=teams-app-password\n",
+    );
+    fs.writeFileSync(
+      path.join(root, "apps", "pglite", ".env"),
+      [
+        "APP_NAME=pglite",
+        "PGLITE_DATABASE_URL=pglite://memory",
+        "DATABASE_URL=postgres://database",
+        "",
+      ].join("\n"),
+    );
+
+    const additions = planMigrationDependencyAdditions(
+      detectUpgradeProject(root)!,
+      {},
+    );
+    expect(
+      additions.map(({ file, name }) => [path.relative(root, file), name]),
+    ).toEqual([
+      ["apps/enabled/package.json", "@better-auth/sso"],
+      ["apps/enabled/package.json", "@amplitude/analytics-browser"],
+      ["apps/enabled/package.json", "botframework-connector"],
+      ["apps/pglite/package.json", "@electric-sql/pglite"],
+    ]);
+    expect(JSON.stringify(additions)).not.toContain("secret");
+    expect(process.env.AUTH_SSO).toBeUndefined();
+    expect(process.env.DATABASE_URL).toBeUndefined();
+  });
+});
+
+describe("runUpgrade", () => {
+  it("check exits non-zero when overrides are present", async () => {
+    const root = makeTempProject({
+      rootPkg: {
+        name: "old-app",
+        dependencies: { "@agent-native/core": "latest" },
+        overrides: { "@agent-native/core": "1.0.0" },
+      },
+    });
+    const { io, err } = captureIo();
+    const code = await runUpgrade(["check", "--cwd", root], io);
+    expect(code).toBe(1);
+    expect(err.join("\n")).toContain("Do not paper over");
+  });
+
+  it("blocks run when overrides exist unless --force", async () => {
+    const root = makeTempProject({
+      rootPkg: {
+        name: "old-app",
+        dependencies: { "@agent-native/core": "^0.8.0" },
+        pnpm: { overrides: { "@agent-native/dispatch": "1.0.0" } },
+      },
+    });
+    const { io } = captureIo();
+    expect(await runUpgrade(["--cwd", root, "--skip-install"], io)).toBe(1);
+
+    const forced = captureIo();
+    expect(
+      await runUpgrade(
+        [
+          "--cwd",
+          root,
+          "--force",
+          "--skip-install",
+          "--skip-skills",
+          "--skip-verify",
+        ],
+        forced.io,
+      ),
+    ).toBe(0);
+    const pkg = JSON.parse(
+      fs.readFileSync(path.join(root, "package.json"), "utf-8"),
+    );
+    expect(pkg.dependencies["@agent-native/core"]).toBe("latest");
+  });
+
+  it("dry-run plans bumps without writing", async () => {
+    const root = makeTempProject({
+      rootPkg: {
+        name: "old-app",
+        dependencies: { "@agent-native/core": "^0.8.0" },
+        scripts: { typecheck: "echo ok" },
+      },
+    });
+    const { io, out } = captureIo();
+    const code = await runUpgrade(["--cwd", root, "--dry-run"], io);
+    expect(code).toBe(0);
+    expect(out.join("\n")).toContain("[planned] bump");
+    const pkg = JSON.parse(
+      fs.readFileSync(path.join(root, "package.json"), "utf-8"),
+    );
+    expect(pkg.dependencies["@agent-native/core"]).toBe("^0.8.0");
+  });
+
+  it("dry-run reports feature peers without writing package manifests", async () => {
+    clearUpgradeEnvironment();
+    const root = makeTempProject({
+      rootPkg: {
+        name: "old-app",
+        dependencies: { "@agent-native/core": "latest" },
+      },
+    });
+    fs.writeFileSync(
+      path.join(root, ".env"),
+      "DATABASE_URL=postgres://database\nAUTH_SSO=true\n",
+    );
+    const packageFile = path.join(root, "package.json");
+    const before = fs.readFileSync(packageFile, "utf-8");
+    const { io, out } = captureIo();
+
+    expect(
+      await runUpgrade(
+        ["--cwd", root, "--dry-run", "--skip-skills", "--skip-verify"],
+        io,
+      ),
+    ).toBe(0);
+
+    expect(out.join("\n")).toContain("[planned] feature-dependencies");
+    expect(out.join("\n")).toContain("@better-auth/sso 1.7.6");
+    expect(out.join("\n")).toContain(
+      "Remote deployment environment and database-backed feature settings cannot be inspected",
+    );
+    expect(out.join("\n")).toContain("botframework-connector");
+    expect(out.join("\n")).not.toContain(
+      "Would align add package.json @electric-sql/pglite",
+    );
+    expect(fs.readFileSync(packageFile, "utf-8")).toBe(before);
+  });
+
+  it("adds feature peers idempotently", async () => {
+    clearUpgradeEnvironment();
+    const root = makeTempProject({
+      rootPkg: {
+        name: "old-app",
+        devDependencies: { "@agent-native/core": "latest" },
+      },
+    });
+    const { io, out } = captureIo();
+    const args = [
+      "--cwd",
+      root,
+      "--skip-install",
+      "--skip-skills",
+      "--skip-verify",
+    ];
+
+    expect(await runUpgrade(args, io)).toBe(0);
+    const afterFirstRun = fs.readFileSync(
+      path.join(root, "package.json"),
+      "utf-8",
+    );
+    expect(await runUpgrade(args, io)).toBe(0);
+
+    const packageJson = JSON.parse(afterFirstRun) as {
+      dependencies?: Record<string, string>;
+      devDependencies?: Record<string, string>;
+    };
+    expect(packageJson.dependencies?.["@electric-sql/pglite"]).toBe("^0.5.8");
+    expect(
+      packageJson.devDependencies?.["@electric-sql/pglite"],
+    ).toBeUndefined();
+    expect(fs.readFileSync(path.join(root, "package.json"), "utf-8")).toBe(
+      afterFirstRun,
+    );
+    expect(out.join("\n")).toContain("[skipped] feature-dependencies");
+    expect(out.join("\n")).toContain(
+      "Remote deployment environment and database-backed feature settings cannot be inspected",
+    );
+    expect(out.join("\n")).toContain("botframework-connector");
+  });
+
+  it("promotes compatible feature peers from devDependencies", async () => {
+    clearUpgradeEnvironment();
+    const root = makeTempProject({
+      rootPkg: {
+        name: "old-app",
+        dependencies: { "@agent-native/core": "latest" },
+        devDependencies: {
+          "@electric-sql/pglite": "0.5.1",
+          "@sentry/node": "^10.60.0",
+        },
+      },
+    });
+    fs.writeFileSync(
+      path.join(root, ".env"),
+      "DATABASE_URL=pglite://memory\nSENTRY_SERVER_DSN=https://key@example/123\n",
+    );
+    const { io } = captureIo();
+
+    expect(
+      await runUpgrade(
+        ["--cwd", root, "--skip-install", "--skip-skills", "--skip-verify"],
+        io,
+      ),
+    ).toBe(0);
+
+    const packageJson = JSON.parse(
+      fs.readFileSync(path.join(root, "package.json"), "utf-8"),
+    ) as {
+      dependencies: Record<string, string>;
+      devDependencies?: Record<string, string>;
+    };
+    expect(packageJson.dependencies["@electric-sql/pglite"]).toBe("^0.5.8");
+    expect(packageJson.dependencies["@sentry/node"]).toBe("^10.60.0");
+    expect(
+      packageJson.devDependencies?.["@electric-sql/pglite"],
+    ).toBeUndefined();
+    expect(packageJson.devDependencies?.["@sentry/node"]).toBeUndefined();
+  });
+
+  it("runs install + skills + verify through injected io", async () => {
+    const root = makeTempProject({
+      rootPkg: {
+        name: "old-app",
+        dependencies: { "@agent-native/core": "^0.8.0" },
+        scripts: { typecheck: "echo ok" },
+      },
+    });
+    const spawnCalls: string[][] = [];
+    const skills = vi.fn(async () => {});
+    const { io } = captureIo({
+      spawn: (command, args) => {
+        spawnCalls.push([command, ...args]);
+        if (args.includes("install")) writeInstalledPackage(root, "0.131.4");
+        return {
+          status: 0,
+          pid: 1,
+          output: [],
+          stdout: "",
+          stderr: "",
+          signal: null,
+        };
+      },
+      runSkillsUpdate: skills,
+    });
+
+    const code = await runUpgrade(["--cwd", root], io);
+    expect(code).toBe(0);
+    expect(skills).toHaveBeenCalledOnce();
+    expect(spawnCalls.some((c) => c.includes("install"))).toBe(true);
+    expect(spawnCalls.some((c) => c.includes("typecheck"))).toBe(true);
+    const pkg = JSON.parse(
+      fs.readFileSync(path.join(root, "package.json"), "utf-8"),
+    );
+    expect(pkg.dependencies["@agent-native/core"]).toBe("0.131.4");
+  });
+
+  it("adds a missing migration dependency before install and applies source afterward", async () => {
+    const root = makeTempProject({
+      rootPkg: {
+        name: "old-app",
+        dependencies: { "@agent-native/core": "0.110.2" },
+      },
+    });
+    fs.writeFileSync(
+      path.join(root, ".env"),
+      "DATABASE_URL=postgres://db.example/test\n",
+    );
+    const source = path.join(root, "src/index.tsx");
+    fs.mkdirSync(path.dirname(source), { recursive: true });
+    fs.writeFileSync(
+      source,
+      'import { RichMarkdownEditor } from "@agent-native/core/client/editor";\nvoid RichMarkdownEditor;\n',
+    );
+    const installDependencies: Array<Record<string, string>> = [];
+    const { io } = captureIo({
+      spawn: (_command, args) => {
+        if (args.includes("install")) {
+          expect(fs.readFileSync(source, "utf-8")).toContain(
+            'from "@agent-native/core/client/editor"',
+          );
+          const packageJson = JSON.parse(
+            fs.readFileSync(path.join(root, "package.json"), "utf-8"),
+          ) as { dependencies: Record<string, string> };
+          installDependencies.push({ ...packageJson.dependencies });
+          writeInstalledPackage(root, "0.131.4");
+          const toolkitDir = path.join(
+            root,
+            "node_modules/@agent-native/toolkit",
+          );
+          fs.mkdirSync(toolkitDir, { recursive: true });
+          fs.writeFileSync(
+            path.join(toolkitDir, "package.json"),
+            `${JSON.stringify({
+              name: "@agent-native/toolkit",
+              version: "0.5.2",
+              exports: { "./editor": "./editor.js" },
+            })}\n`,
+          );
+          fs.writeFileSync(
+            path.join(toolkitDir, "editor.js"),
+            "export const RichMarkdownEditor = {};\n",
+          );
+          writeToolkitMigrationManifest(toolkitDir);
+        }
+        return {
+          status: 0,
+          pid: 1,
+          output: [],
+          stdout: "",
+          stderr: "",
+          signal: null,
+        };
+      },
+    });
+
+    const code = await runUpgrade(
+      ["--cwd", root, "--codemods", "--yes", "--skip-skills", "--skip-verify"],
+      io,
+    );
+
+    expect(code).toBe(0);
+    expect(installDependencies).toEqual([
+      expect.objectContaining({
+        "@agent-native/core": "latest",
+        "@agent-native/toolkit": toolkitVersionRange,
+      }),
+    ]);
+    expect(fs.readFileSync(source, "utf-8")).toContain(
+      'from "@agent-native/toolkit/editor"',
+    );
+  });
+
+  it("keeps an installed but unresolved migration subpath unchanged", async () => {
+    const root = makeTempProject({
+      rootPkg: {
+        name: "old-app",
+        dependencies: {
+          "@agent-native/core": "0.110.2",
+          "@agent-native/toolkit": "0.5.1",
+        },
+      },
+    });
+    const source = path.join(root, "src/index.tsx");
+    fs.mkdirSync(path.dirname(source), { recursive: true });
+    const original =
+      'import { RichMarkdownEditor } from "@agent-native/core/client/editor";\nvoid RichMarkdownEditor;\n';
+    fs.writeFileSync(source, original);
+    writeInstalledPackage(root, "0.131.4");
+    const toolkitDir = path.join(root, "node_modules/@agent-native/toolkit");
+    fs.mkdirSync(toolkitDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(toolkitDir, "package.json"),
+      `${JSON.stringify({
+        name: "@agent-native/toolkit",
+        version: "0.5.2",
+        exports: { ".": "./index.js" },
+      })}\n`,
+    );
+    fs.writeFileSync(path.join(toolkitDir, "index.js"), "export {};\n");
+    writeToolkitMigrationManifest(toolkitDir);
+    const { io, err } = captureIo();
+
+    const code = await runUpgrade(
+      ["--cwd", root, "--codemods", "--yes", "--skip-skills", "--skip-verify"],
+      io,
+    );
+
+    expect(code).toBe(0);
+    expect(fs.readFileSync(source, "utf-8")).toBe(original);
+    expect(err.join("\n")).toContain("not exported by an installed package");
+  });
+
+  it("reports only changes applied after post-install target verification", async () => {
+    const root = makeTempProject({
+      rootPkg: {
+        name: "old-app",
+        dependencies: { "@agent-native/core": "0.110.2" },
+      },
+    });
+    fs.writeFileSync(
+      path.join(root, ".env"),
+      "DATABASE_URL=postgres://db.example/test\n",
+    );
+    const source = path.join(root, "src/index.tsx");
+    fs.mkdirSync(path.dirname(source), { recursive: true });
+    const original =
+      'import { RichMarkdownEditor } from "@agent-native/core/client/editor";\nvoid RichMarkdownEditor;\n';
+    fs.writeFileSync(source, original);
+    const { io, out, err } = captureIo({
+      spawn: (_command, args) => {
+        if (args.includes("install")) {
+          writeInstalledPackage(root, "0.131.4");
+          const toolkitDir = path.join(
+            root,
+            "node_modules/@agent-native/toolkit",
+          );
+          fs.mkdirSync(toolkitDir, { recursive: true });
+          fs.writeFileSync(
+            path.join(toolkitDir, "package.json"),
+            `${JSON.stringify({
+              name: "@agent-native/toolkit",
+              version: "0.5.2",
+              exports: { ".": "./index.js" },
+            })}\n`,
+          );
+          fs.writeFileSync(path.join(toolkitDir, "index.js"), "export {};\n");
+          writeToolkitMigrationManifest(toolkitDir);
+        }
+        return {
+          status: 0,
+          pid: 1,
+          output: [],
+          stdout: "",
+          stderr: "",
+          signal: null,
+        };
+      },
+    });
+
+    const code = await runUpgrade(
+      ["--cwd", root, "--codemods", "--yes", "--skip-skills", "--skip-verify"],
+      io,
+    );
+
+    expect(code).toBe(0);
+    expect(fs.readFileSync(source, "utf-8")).toBe(original);
+    expect(out.join("\n")).not.toContain("+++ b/src/index.tsx");
+    expect(err.join("\n")).toContain("not exported by an installed package");
+    const pkg = JSON.parse(
+      fs.readFileSync(path.join(root, "package.json"), "utf-8"),
+    ) as { dependencies: Record<string, string> };
+    expect(pkg.dependencies["@agent-native/toolkit"]).toBe(toolkitVersionRange);
+  });
+
+  it("reports dependency changes when installation fails before source rewrites", async () => {
+    const root = makeTempProject({
+      rootPkg: {
+        name: "old-app",
+        dependencies: { "@agent-native/core": "0.110.2" },
+      },
+    });
+    fs.writeFileSync(
+      path.join(root, ".env"),
+      "DATABASE_URL=postgres://db.example/test\n",
+    );
+    const source = path.join(root, "src/index.tsx");
+    fs.mkdirSync(path.dirname(source), { recursive: true });
+    const original =
+      'import { RichMarkdownEditor } from "@agent-native/core/client/editor";\nvoid RichMarkdownEditor;\n';
+    fs.writeFileSync(source, original);
+    const { io, err } = captureIo({
+      spawn: () => ({
+        status: 1,
+        pid: 1,
+        output: [],
+        stdout: "",
+        stderr: "boom",
+        signal: null,
+      }),
+    });
+
+    const code = await runUpgrade(
+      [
+        "--cwd",
+        root,
+        "--codemods",
+        "--yes",
+        "--json",
+        "--skip-skills",
+        "--skip-verify",
+      ],
+      io,
+    );
+
+    expect(code).toBe(1);
+    expect(fs.readFileSync(source, "utf-8")).toBe(original);
+    const result = JSON.parse(err.join("\n")) as {
+      codemod: { files: string[]; diff: string };
+    };
+    expect(result.codemod.files).toEqual(["package.json"]);
+    expect(result.codemod.diff).toContain(
+      `"@agent-native/toolkit": "${toolkitVersionRange}"`,
+    );
+  });
+
+  it("applies codemods by default while dependency installation is skipped", async () => {
+    const root = makeTempProject({
+      rootPkg: {
+        name: "old-app",
+        dependencies: { "@agent-native/core": "0.110.2" },
+      },
+    });
+    const source = path.join(root, "src/index.tsx");
+    fs.mkdirSync(path.dirname(source), { recursive: true });
+    fs.writeFileSync(
+      source,
+      'import { RichMarkdownEditor } from "@agent-native/core/client/editor";\nvoid RichMarkdownEditor;\n',
+    );
+    const { io, out } = captureIo();
+
+    const code = await runUpgrade(
+      [
+        "--cwd",
+        root,
+        "--codemods",
+        "--skip-install",
+        "--skip-skills",
+        "--skip-verify",
+      ],
+      io,
+    );
+
+    expect(code).toBe(0);
+    expect(out.join("\n")).toContain("without installing dependencies");
+    expect(fs.readFileSync(source, "utf-8")).toContain(
+      'from "@agent-native/toolkit/editor"',
+    );
+  });
+
+  it("prints failure guidance when install fails", async () => {
+    const root = makeTempProject({
+      rootPkg: {
+        name: "old-app",
+        dependencies: { "@agent-native/core": "latest" },
+      },
+    });
+    const { io, err } = captureIo({
+      spawn: () => ({
+        status: 1,
+        pid: 1,
+        output: [],
+        stdout: "",
+        stderr: "boom",
+        signal: null,
+      }),
+    });
+    const code = await runUpgrade(
+      ["--cwd", root, "--skip-skills", "--skip-verify"],
+      io,
+    );
+    expect(code).toBe(1);
+    expect(err.join("\n")).toContain("pnpm.overrides");
+  });
+
+  it("pins every workspace manifest to the version install resolved", async () => {
+    const root = makeTempProject({
+      kind: "workspace",
+      rootPkg: {
+        name: "ws",
+        dependencies: { "@agent-native/core": "0.120.3" },
+      },
+      apps: {
+        mail: {
+          name: "mail",
+          dependencies: { "@agent-native/core": "0.125.0" },
+          devDependencies: { "@agent-native/dispatch": "latest" },
+        },
+        tasks: {
+          name: "tasks",
+          dependencies: {
+            "@agent-native/core": "^0.130.0",
+            "@agent-native/scheduling": "workspace:*",
+          },
+        },
+      },
+    });
+    const { io } = captureIo({
+      spawn: (_command, args) => {
+        if (args.includes("install")) {
+          writeInstalledPackage(root, "0.131.4");
+          writeInstalledPackage(root, "0.131.4", "@agent-native/dispatch");
+        }
+        return {
+          status: 0,
+          pid: 1,
+          output: [],
+          stdout: "",
+          stderr: "",
+          signal: null,
+        };
+      },
+    });
+
+    const code = await runUpgrade(
+      ["--cwd", root, "--skip-skills", "--skip-verify"],
+      io,
+    );
+    expect(code).toBe(0);
+
+    const read = (...segments: string[]) =>
+      JSON.parse(
+        fs.readFileSync(path.join(root, ...segments, "package.json"), "utf-8"),
+      );
+    expect(read().dependencies["@agent-native/core"]).toBe("0.131.4");
+    expect(read("apps", "mail").dependencies["@agent-native/core"]).toBe(
+      "0.131.4",
+    );
+    expect(read("apps", "mail").devDependencies["@agent-native/dispatch"]).toBe(
+      "0.131.4",
+    );
+    expect(read("apps", "tasks").dependencies["@agent-native/core"]).toBe(
+      "0.131.4",
+    );
+    expect(read("apps", "tasks").dependencies["@agent-native/scheduling"]).toBe(
+      "workspace:*",
+    );
+  });
+
+  it("fails loudly instead of leaving a spec floating on latest", async () => {
+    const root = makeTempProject({
+      rootPkg: {
+        name: "old-app",
+        dependencies: { "@agent-native/core": "^0.8.0" },
+      },
+    });
+    const { io, err } = captureIo();
+
+    const code = await runUpgrade(
+      ["--cwd", root, "--skip-skills", "--skip-verify"],
+      io,
+    );
+    expect(code).toBe(1);
+    expect(err.join("\n")).toContain("@agent-native/core");
+    const pkg = JSON.parse(
+      fs.readFileSync(path.join(root, "package.json"), "utf-8"),
+    );
+    expect(pkg.dependencies["@agent-native/core"]).toBe("latest");
+  });
+
+  it("stops the run when a manifest cannot be parsed", async () => {
+    const root = makeTempProject({
+      kind: "workspace",
+      rootPkg: {
+        name: "ws",
+        dependencies: { "@agent-native/core": "^0.8.0" },
+      },
+      apps: { mail: { name: "mail" } },
+    });
+    fs.writeFileSync(
+      path.join(root, "apps", "mail", "package.json"),
+      "{ not json",
+    );
+    const { io, err } = captureIo();
+
+    const code = await runUpgrade(
+      ["--cwd", root, "--skip-skills", "--skip-verify"],
+      io,
+    );
+    expect(code).toBe(1);
+    expect(err.join("\n")).toContain(path.join("apps", "mail", "package.json"));
+    const pkg = JSON.parse(
+      fs.readFileSync(path.join(root, "package.json"), "utf-8"),
+    );
+    expect(pkg.dependencies["@agent-native/core"]).toBe("^0.8.0");
+  });
+
+  it("check exits non-zero when a manifest cannot be parsed", async () => {
+    const root = makeTempProject({
+      kind: "workspace",
+      rootPkg: {
+        name: "ws",
+        dependencies: { "@agent-native/core": "latest" },
+      },
+      apps: { mail: { name: "mail" } },
+    });
+    fs.writeFileSync(
+      path.join(root, "apps", "mail", "package.json"),
+      "{ not json",
+    );
+    const { io, out } = captureIo();
+
+    const code = await runUpgrade(["check", "--cwd", root], io);
+    expect(code).toBe(1);
+    expect(out.join("\n")).toContain("Unreadable package.json");
+  });
+
+  it("skips pinning when install was skipped", async () => {
+    const root = makeTempProject({
+      rootPkg: {
+        name: "old-app",
+        dependencies: { "@agent-native/core": "^0.8.0" },
+      },
+    });
+    const { io, out } = captureIo();
+
+    const code = await runUpgrade(
+      ["--cwd", root, "--skip-install", "--skip-skills", "--skip-verify"],
+      io,
+    );
+    expect(code).toBe(0);
+    expect(out.join("\n")).toContain("[skipped] pin");
+  });
+});
